@@ -9,6 +9,7 @@ set(CMAKE_DEPENDS_LANGUAGES
 # The set of dependency files which are needed:
 set(CMAKE_DEPENDS_DEPENDENCY_FILES
   "/Users/edwardsong/Projects/Inverted Pendulum/src/main.cpp" "CMakeFiles/SFMLTest.dir/src/main.cpp.o" "gcc" "CMakeFiles/SFMLTest.dir/src/main.cpp.o.d"
+  "/Users/edwardsong/Projects/Inverted Pendulum/src/render/track.cpp" "CMakeFiles/SFMLTest.dir/src/render/track.cpp.o" "gcc" "CMakeFiles/SFMLTest.dir/src/render/track.cpp.o.d"
   )
 
 # Targets to which this target links which contain Fortran sources.
