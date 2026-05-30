@@ -68,30 +68,41 @@ void App::physicsStep(float h) {
     // F is the externally-supplied control input — set via setControlForce
     // (keyboard, scripted test, RL policy). The cart's velocity then emerges
     // from integration; it is not commanded directly.
-    const float F = controlForce;
-    const float t = pendulum.getAngle();
-    const float w = pendulum.getAngularVelocity();
+    const float F = this->controlForce;
+    const float t = this->pendulum.getAngle();
+    const float w = this->pendulum.getAngularVelocity();
     const float s = std::sin(t);
     const float c = std::cos(t);
-    const float M = cart.getMass();
-    const float m = pendulum.getBobMass();
-    const float L = pendulum.getLength();
-    const float damping = pendulum.getDamping();
+    const float M = this->cart.getMass();
+    const float m = this->pendulum.getBobMass();
+    const float L = this->pendulum.getLength();
+    const float damping = this->pendulum.getDamping();
 
-    const float xddot = (F + m * L * w * w * s - m * kGravity * s * c) / (M + m * s * s);
+    float xddot = (F + m * L * w * w * s - m * kGravity * s * c) / (M + m * s * s);
+
+    // Wall contact: if the cart is pinned against a wall and the net force
+    // would push it further into the wall, the wall's normal force cancels
+    // it — the cart's true acceleration is 0. Propagate that to thddot so the
+    // pendulum doesn't feel a pivot acceleration that physically can't occur.
+    const int contact = this->cart.boundaryContact();
+    if ((contact < 0 && xddot < 0.f) || (contact > 0 && xddot > 0.f)) {
+        xddot = 0.f;
+        this->cart.setVelocity(0.f);
+    }
+
     const float thddot = (kGravity * s - xddot * c) / L - damping * w;
 
     // Semi-implicit Euler: update velocities first, then positions from new velocities.
-    const float vNew = cart.getVelocity() + xddot * h;
-    cart.setVelocity(vNew);
-    cart.setX(cart.getX() + vNew * h);
-    if (cart.clampToBounds()) {
-        cart.setVelocity(0.f);
+    const float vNew = this->cart.getVelocity() + xddot * h;
+    this->cart.setVelocity(vNew);
+    this->cart.setX(this->cart.getX() + vNew * h);
+    if (this->cart.clampToBounds()) {
+        this->cart.setVelocity(0.f);
     }
 
     const float wNew = w + thddot * h;
-    pendulum.setAngularVelocity(wNew);
-    pendulum.setAngle(t + wNew * h);
+    this->pendulum.setAngularVelocity(wNew);
+    this->pendulum.setAngle(t + wNew * h);
 }
 
 void App::update(float dt) {

@@ -19,6 +19,9 @@ public:
     // Clamp x inside [minX+halfW, maxX-halfW]; returns true if it had to clamp.
     bool clampToBounds();
 
+    // -1 if pressed against the left wall, +1 if against the right wall, 0 otherwise.
+    int boundaryContact() const;
+
 private:
     float width;
     float height;

@@ -41,6 +41,14 @@ bool Cart::clampToBounds() {
     return false;
 }
 
+int Cart::boundaryContact() const {
+    const float halfW = this->width / 2.f;
+    const float eps = 1e-4f;
+    if (this->x <= this->minX + halfW + eps) return -1;
+    if (this->x >= this->maxX - halfW - eps) return +1;
+    return 0;
+}
+
 sf::Vector2f Cart::getPivot() const {
     return sf::Vector2f(x, y);
 }
