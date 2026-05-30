@@ -1,9 +1,10 @@
 #include "cart.hpp"
 
-Cart::Cart(float width, float height, float mass) {
+Cart::Cart(float width, float height, float mass, float friction) {
     this->width = width;
     this->height = height;
     this->mass = mass;
+    this->friction = friction;
     x = 0.f;
     y = 0.f;
     velocity = 0.f;
@@ -25,6 +26,7 @@ void Cart::setBounds(float minX, float maxX, float y) {
 float Cart::getX() const { return x; }
 float Cart::getVelocity() const { return velocity; }
 float Cart::getMass() const { return mass; }
+float Cart::getFriction() const { return this->friction; }
 void Cart::setX(float v) { x = v; }
 void Cart::setVelocity(float v) { velocity = v; }
 

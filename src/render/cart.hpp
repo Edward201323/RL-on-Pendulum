@@ -4,7 +4,8 @@
 
 class Cart {
 public:
-    Cart(float width = 100.f, float height = 50.f, float mass = 1.0f);
+    Cart(float width = 100.f, float height = 50.f, float mass = 1.0f,
+         float friction = 1.0f);
 
     void setBounds(float minX, float maxX, float y);
     void draw(sf::RenderWindow &window) const;
@@ -13,6 +14,7 @@ public:
     float getX() const;
     float getVelocity() const;
     float getMass() const;
+    float getFriction() const; // viscous cart-track coefficient (force per velocity)
     void setX(float x);
     void setVelocity(float v);
 
@@ -26,6 +28,7 @@ private:
     float width;
     float height;
     float mass;
+    float friction;
     float x;
     float y;
     float velocity;

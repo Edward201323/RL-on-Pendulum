@@ -71,14 +71,18 @@ void App::physicsStep(float h) {
     const float F = this->controlForce;
     const float t = this->pendulum.getAngle();
     const float w = this->pendulum.getAngularVelocity();
+    const float v = this->cart.getVelocity();
     const float s = std::sin(t);
     const float c = std::cos(t);
     const float M = this->cart.getMass();
     const float m = this->pendulum.getBobMass();
     const float L = this->pendulum.getLength();
     const float damping = this->pendulum.getDamping();
+    const float mu = this->cart.getFriction();
 
-    float xddot = (F + m * L * w * w * s - m * kGravity * s * c) / (M + m * s * s);
+    // Viscous cart-track friction: a force -mu*v added to the cart's net horizontal force.
+    const float Fnet = F - mu * v;
+    float xddot = (Fnet + m * L * w * w * s - m * kGravity * s * c) / (M + m * s * s);
 
     // Wall contact: if the cart is pinned against a wall and the net force
     // would push it further into the wall, the wall's normal force cancels
