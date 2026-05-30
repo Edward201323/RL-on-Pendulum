@@ -4,19 +4,28 @@
 
 class Cart {
 public:
-    Cart(float width = 100.f, float height = 50.f, float speed = 400.f);
+    Cart(float width = 100.f, float height = 50.f, float mass = 1.0f);
 
     void setBounds(float minX, float maxX, float y);
-    void update(float dt);
     void draw(sf::RenderWindow &window) const;
     sf::Vector2f getPivot() const; // top-center of cart
+
+    float getX() const;
+    float getVelocity() const;
+    float getMass() const;
+    void setX(float x);
+    void setVelocity(float v);
+
+    // Clamp x inside [minX+halfW, maxX-halfW]; returns true if it had to clamp.
+    bool clampToBounds();
 
 private:
     float width;
     float height;
-    float speed;
+    float mass;
     float x;
     float y;
+    float velocity;
     float minX;
     float maxX;
     bool placed;

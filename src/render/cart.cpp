@@ -1,11 +1,12 @@
 #include "cart.hpp"
 
-Cart::Cart(float width, float height, float speed) {
+Cart::Cart(float width, float height, float mass) {
     this->width = width;
     this->height = height;
-    this->speed = speed;
+    this->mass = mass;
     x = 0.f;
     y = 0.f;
+    velocity = 0.f;
     minX = 0.f;
     maxX = 0.f;
     placed = false;
@@ -21,25 +22,23 @@ void Cart::setBounds(float minX, float maxX, float y) {
     }
 }
 
-void Cart::update(float dt) {
-    float dir = 0.f;
-    if (sf::Keyboard::isKeyPressed(sf::Keyboard::Left) ||
-        sf::Keyboard::isKeyPressed(sf::Keyboard::A)) {
-        dir -= 1.f;
-    }
-    if (sf::Keyboard::isKeyPressed(sf::Keyboard::Right) ||
-        sf::Keyboard::isKeyPressed(sf::Keyboard::D)) {
-        dir += 1.f;
-    }
-    x += dir * speed * dt;
+float Cart::getX() const { return x; }
+float Cart::getVelocity() const { return velocity; }
+float Cart::getMass() const { return mass; }
+void Cart::setX(float v) { x = v; }
+void Cart::setVelocity(float v) { velocity = v; }
 
+bool Cart::clampToBounds() {
     float halfW = width / 2.f;
-    if (x < minX + halfW){
+    if (x < minX + halfW) {
         x = minX + halfW;
-    } 
-    if (x > maxX - halfW){
+        return true;
+    }
+    if (x > maxX - halfW) {
         x = maxX - halfW;
-    } 
+        return true;
+    }
+    return false;
 }
 
 sf::Vector2f Cart::getPivot() const {

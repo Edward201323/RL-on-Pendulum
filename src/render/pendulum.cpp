@@ -6,12 +6,16 @@ namespace {
 constexpr float kPi = 3.14159265358979323846f;
 }
 
-Pendulum::Pendulum(float length, float rodThickness, float bobRadius) {
+Pendulum::Pendulum(float length, float rodThickness, float bobRadius,
+                   float bobMass, float damping) {
     this->length = length;
     this->rodThickness = rodThickness;
     this->bobRadius = bobRadius;
+    this->bobMass = bobMass;
+    this->damping = damping;
     pivot = sf::Vector2f(0.f, 0.f);
     angle = 0;
+    angularVelocity = 0.f;
 }
 
 void Pendulum::setPivot(sf::Vector2f p) {
@@ -24,6 +28,26 @@ void Pendulum::setAngle(float radians) {
 
 float Pendulum::getAngle() const {
     return angle;
+}
+
+void Pendulum::setAngularVelocity(float omega) {
+    angularVelocity = omega;
+}
+
+float Pendulum::getAngularVelocity() const {
+    return angularVelocity;
+}
+
+float Pendulum::getLength() const {
+    return length;
+}
+
+float Pendulum::getBobMass() const {
+    return bobMass;
+}
+
+float Pendulum::getDamping() const {
+    return damping;
 }
 
 void Pendulum::draw(sf::RenderWindow& window) const {
