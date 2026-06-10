@@ -38,6 +38,17 @@ DT = 1.0 / 60.0         # physics step (s), matched to the 60 FPS SFML demo
 SPIN_LIMIT = 12.0       # rad/s; above this, angular velocity is "too high" and punished
                         # (swing-up only needs ~9 rad/s, so this leaves it room)
 
+# -- reward tuning constants ------------------------------------------------
+# All per-step. The dominant signal is uprightness (cos theta in [-1, 1] plus
+# the upright-and-slow bonus up to +1), so keep edge/centering terms scaled so
+# they shape behavior without out-voting "get the pole up".
+EDGE_CONTACT_PENALTY = 50.0   # touching a wall: must clearly never be worth it
+EDGE_APPROACH_PENALTY = 3.0   # grows as the cart enters the outer band (below)
+EDGE_MARGIN_FRAC = 0.85       # start the approach penalty past 85% of track_limit
+                              #   (i.e. punish loitering in the outer ~15%)
+CENTERING_PENALTY = 0.3       # pull the *balanced* cart back to x = 0; kept well
+                              #   under the uprightness signal so it stays secondary
+
 # Continuous action: a single value in [-1, 1] scaled to a horizontal force on
 # the cart (-1 = full push left, +1 = full push right, 0 = coast). The policy
 # chooses both direction AND magnitude.
@@ -99,7 +110,10 @@ class PendulumSwingUpEnv(gym.Env):
         # wrap-safe, unlike theta**2.
         upright = math.cos(theta)
         reward = upright
-        reward -= 0.1 * (self.sim.x / limit) ** 2          # stay near center
+        # Centering: pull the cart toward x = 0. Quadratic so it is gentle near
+        # the middle (won't fight the swing-up, which needs room to pump) but
+        # firms up off-center, settling the balanced cart at the track center.
+        reward -= CENTERING_PENALTY * (self.sim.x / limit) ** 2
         reward -= 0.005 * theta_dot ** 2                   # mild: discourage spinning
         # Steep penalty once the pole is spinning faster than swing-up needs --
         # kills the "vibrate fast near the top to game cos(theta)" exploit.
@@ -114,8 +128,16 @@ class PendulumSwingUpEnv(gym.Env):
         # at the top rather than just whirling through it.
         if upright > 0.95:
             reward += max(0.0, 1.0 - abs(theta_dot) / 2.0)
+        # Approaching-edge penalty: ramp up smoothly once the cart pushes into
+        # the outer band, so it learns to ease off *before* the wall instead of
+        # only reacting on contact. Zero through the inner (1 - margin) of track.
+        frac = abs(self.sim.x) / limit
+        if frac > EDGE_MARGIN_FRAC:
+            over = (frac - EDGE_MARGIN_FRAC) / (1.0 - EDGE_MARGIN_FRAC)  # 0..1+
+            reward -= EDGE_APPROACH_PENALTY * over ** 2
+        # Contact: a large fixed penalty so a wall hit is never a net-positive step.
         if self.sim.boundary_contact() != 0:
-            reward -= 5.0  # strong penalty: hitting a track edge is undesired
+            reward -= EDGE_CONTACT_PENALTY
 
         # No failure state -- the pole may legitimately be at any angle. The
         # episode simply runs for a fixed horizon (truncation).
