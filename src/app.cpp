@@ -1,15 +1,28 @@
 #include "app.hpp"
 
+#include <csignal>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
+#include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <spawn.h>
+#include <string>
+#include <system_error>
+#include <vector>
+
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
 
 #include "render/track.hpp"
+
+extern char** environ;  // for posix_spawn (launching the Python trainer)
 
 namespace {
 constexpr float kPi = 3.14159265358979323846f;
 constexpr float kMaxInputForce = 5.f;      // Newtons; MUST match F_MAX in pendulum_env.py
-constexpr float kEpisodeSeconds = 12.f;    // restart a swing-up attempt after this long
 constexpr float kUprightCos = 0.95f;       // cos(theta) above this counts as "upright"
 
 // Physics runs in SI (meters); rendering is in pixels. This is the one scale
@@ -30,7 +43,34 @@ static sf::ContextSettings makeContextSettings() {
     return settings;
 }
 
-App::App()
+// Find the repo root (the directory containing python/reinforce.py), whether the
+// app is run from the repo root or from elsewhere. Searches the working directory
+// and the executable's directory and its ancestors.
+static std::string findProjectRoot() {
+    namespace fs = std::filesystem;
+    std::vector<fs::path> roots;
+    std::error_code ec;
+    roots.push_back(fs::current_path(ec));
+
+#ifdef __APPLE__
+    char buf[4096];
+    std::uint32_t size = sizeof(buf);
+    if (_NSGetExecutablePath(buf, &size) == 0) {
+        fs::path exe = fs::weakly_canonical(fs::path(buf), ec);
+        for (fs::path d = exe.parent_path(); !d.empty() && d != d.root_path();
+             d = d.parent_path()) {
+            roots.push_back(d);
+        }
+    }
+#endif
+
+    for (const fs::path& root : roots) {
+        if (fs::exists(root / "python" / "reinforce.py", ec)) return root.string();
+    }
+    return ".";  // fall back to the current directory
+}
+
+App::App(int argc, char** argv)
     : window(sf::VideoMode(1280, 900), "Pendulum Balnacing", sf::Style::Default,
              makeContextSettings()),
       sim(),
@@ -42,19 +82,102 @@ App::App()
       episodeTime(0.f),
       uprightStreak(0.f),
       bestUprightStreak(0.f),
-      attemptCount(0) {
+      shownAttempts(0),
+      trainingMode(true),
+      trainingUpdates(600),
+      trainingPid(0) {
     window.setFramerateLimit(60);
 
-    // The trained RL policy drives the cart. Run the app from the repo root so
-    // this relative path resolves. (See python/export_policy.py.)
-    if (this->policy.load("python/policy.txt")) {
-        std::printf("Loaded RL policy from python/policy.txt -- it will swing the pole up "
-                    "and balance it. Press Space to restart an attempt.\n");
-        this->resetEpisode();  // begin a swing-up attempt from the bottom
-    } else {
-        std::printf("No RL policy found (python/policy.txt). Train + export_policy.py first, "
-                    "then run from the repo root.\n");
+    // Args: a number sets the training-update count; "--watch" skips training and
+    // just plays whatever policy.txt already exists.
+    for (int i = 1; i < argc; ++i) {
+        const std::string a = argv[i];
+        if (a == "--watch") {
+            this->trainingMode = false;
+        } else {
+            try { this->trainingUpdates = std::stoi(a); } catch (...) {}
+        }
     }
+
+    this->projectRoot = findProjectRoot();
+    this->policyPath = this->projectRoot + "/python/policy.txt";
+
+    this->resetEpisode();  // pole at the bottom
+    if (this->trainingMode) {
+        // Start "untrained" (Attempt 0, no policy -> coasts). Press Space to sample
+        // the current policy as training progresses.
+        this->launchTraining();
+    } else {
+        this->snapshotPolicy();  // watch mode: show the existing policy right away
+        std::printf("Watch mode: playing the existing policy (no training).\n");
+    }
+}
+
+App::~App() {
+    // Don't leave the trainer running after the window closes.
+    if (this->trainingPid > 0) {
+        kill(this->trainingPid, SIGTERM);
+    }
+}
+
+// Launch `python3.12 python/reinforce.py <updates>` from the repo root as a child
+// process. It re-exports policy.txt periodically, which this app hot-reloads.
+void App::launchTraining() {
+    // Clear any stale status from a previous run so the box doesn't briefly show
+    // an old "Training done" before the new run writes its first update.
+    std::error_code ec;
+    std::filesystem::remove(this->projectRoot + "/python/train_status.txt", ec);
+
+    const std::string cmd = "cd '" + this->projectRoot +
+                            "' && exec python3.12 python/reinforce.py " +
+                            std::to_string(this->trainingUpdates);
+    const char* argv[] = {"/bin/sh", "-c", cmd.c_str(), nullptr};
+    pid_t pid = 0;
+    if (posix_spawn(&pid, "/bin/sh", nullptr, nullptr,
+                    const_cast<char* const*>(argv), environ) == 0) {
+        this->trainingPid = pid;
+        std::printf("Training started (reinforce.py %d updates) -- watch it learn live.\n",
+                    this->trainingUpdates);
+    } else {
+        std::printf("Could not start the training process.\n");
+    }
+}
+
+// Grab the latest exported policy and remember how many training attempts it
+// represents. Called on Space (and once at startup in watch mode) -- so the
+// on-screen policy is frozen between presses, labelled by its attempt count.
+void App::snapshotPolicy() {
+    Policy fresh;
+    if (fresh.load(this->policyPath)) {
+        this->policy = fresh;
+    }
+    std::ifstream in(this->projectRoot + "/python/train_status.txt");
+    int a = 0, done = 0;
+    float r = 0.f;
+    this->shownAttempts = (in >> a >> r >> done) ? a : 0;
+}
+
+// Top-left box: the attempt count behind the policy currently on screen (captured
+// at the last Space press; 0 = untrained) and how long this run has been going.
+std::string App::displayText() const {
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "Attempt %d\n%5.2f s", this->shownAttempts, this->episodeTime);
+    return std::string(buf);
+}
+
+// Bottom-left box: live training progress -- how many attempts done so far and the
+// latest average return -- read from the trainer's status file.
+std::string App::trainingText() const {
+    std::ifstream in(this->projectRoot + "/python/train_status.txt");
+    int attempts = 0, done = 0;
+    float ret = 0.f;
+    if (in >> attempts >> ret >> done) {
+        char buf[80];
+        std::snprintf(buf, sizeof(buf), "%s\nattempts %d\nreturn %.1f",
+                      done ? "Training done" : "Training...", attempts, ret);
+        return std::string(buf);
+    }
+    return "Starting training...";
 }
 
 // Main loop: handle input, step the physics by the real frame time, redraw.
@@ -74,9 +197,11 @@ void App::processEvents() {
         if (event.type == sf::Event::Closed)
             window.close();
 
-        // Space starts a fresh swing-up attempt from the bottom.
+        // Space samples the current policy: load the latest weights, label them
+        // with the training-attempt count, and restart from the bottom.
         if (event.type == sf::Event::KeyPressed &&
             event.key.code == sf::Keyboard::Space) {
+            this->snapshotPolicy();
             this->resetEpisode();
         }
     }
@@ -88,7 +213,6 @@ void App::processEvents() {
 void App::resetEpisode() {
     this->episodeTime = 0.f;
     this->uprightStreak = 0.f;
-    ++this->attemptCount;
     std::uniform_real_distribution<float> dist(-0.05f, 0.05f);
     this->sim.setState(0.f, 0.f, kPi + dist(this->rng), 0.f);
 }
@@ -121,20 +245,8 @@ void App::update(float dt) {
         this->forceHistory.pop_front();
     }
 
-    // Track how long the pole stays upright (the swing-up goal), and run a fixed
-    // episode length before restarting from the bottom -- mirrors training.
+    // Run continuously; the attempt only restarts when the user presses Space.
     this->episodeTime += dt;
-    if (std::cos(this->sim.getAngle()) > kUprightCos) {
-        this->uprightStreak += dt;
-        if (this->uprightStreak > this->bestUprightStreak) {
-            this->bestUprightStreak = this->uprightStreak;
-        }
-    } else {
-        this->uprightStreak = 0.f;
-    }
-    if (this->episodeTime > kEpisodeSeconds) {
-        this->resetEpisode();
-    }
 
     // Map the centered physics x (meters) onto the screen and position renderers.
     const float screenX = layout.center.x + this->sim.getX() * kPixelsPerMeter;
@@ -164,6 +276,9 @@ void App::render() {
     // Boxed control-force graph (bottom) and boxed status (top-left).
     this->hud.drawGraph(window, this->forceHistory, kGraphSamples, kMaxInputForce,
                         "Control force (N)");
-    this->hud.drawInfo(window, this->attemptCount, this->episodeTime);
+    this->hud.drawTextBox(window, this->displayText(), /*bottom=*/false);  // top-left
+    if (this->trainingMode) {
+        this->hud.drawTextBox(window, this->trainingText(), /*bottom=*/true);  // bottom-left
+    }
     window.display();
 }

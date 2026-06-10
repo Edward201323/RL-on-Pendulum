@@ -39,6 +39,10 @@ Hud::Hud() : hasFont(false) {
     for (const char* path : kFontPaths) {
         if (this->font.loadFromFile(path)) {
             this->hasFont = true;
+            // Nearest-neighbour glyph sampling keeps text edges crisp (SFML's
+            // default linear smoothing softens them, which is worse once macOS
+            // upscales the whole window on a Retina display).
+            this->font.setSmooth(false);
             break;
         }
     }
@@ -46,9 +50,9 @@ Hud::Hud() : hasFont(false) {
 
 void Hud::drawPlayfield(sf::RenderWindow& window) const {
     const sf::Vector2u ws = window.getSize();
-    const float x = 40.f, y = 100.f;  // starts below the top-left info box (no overlap)
+    const float x = 40.f, y = 120.f;  // starts below the top-left info box (no overlap)
     const float w = static_cast<float>(ws.x) - 2.f * x;
-    const float h = static_cast<float>(ws.y) * 0.71f - y;
+    const float h = static_cast<float>(ws.y) * 0.74f - y;
     sf::ConvexShape box = roundedRect(w, h, 20.f);
     box.setPosition(x, y);
     box.setFillColor(sf::Color(72, 72, 72));
@@ -87,7 +91,7 @@ void Hud::drawAxis(sf::RenderWindow& window, const TrackLayout& layout,
         if (major && this->hasFont) {
             char buf[16];
             std::snprintf(buf, sizeof(buf), "%.2f", meters);
-            sf::Text label(buf, this->font, 13);
+            sf::Text label(buf, this->font, 16);
             label.setFillColor(axisColor);
             const sf::FloatRect b = label.getLocalBounds();
             // Snap origin and position to whole pixels so glyphs stay crisp.
@@ -98,34 +102,38 @@ void Hud::drawAxis(sf::RenderWindow& window, const TrackLayout& layout,
     }
 }
 
-void Hud::drawInfo(sf::RenderWindow& window, int attempt, float seconds) const {
+void Hud::drawTextBox(sf::RenderWindow& window, const std::string& str, bool bottom) const {
     if (!this->hasFont) return;
+    const sf::Vector2u ws = window.getSize();
 
-    char buf[64];
-    std::snprintf(buf, sizeof(buf), "Attempt %d\n%5.2f s", attempt, seconds);
-    sf::Text text(buf, this->font, 18);
+    sf::Text text(str, this->font, 20);
     text.setFillColor(sf::Color::White);
-    text.setPosition(30.f, 28.f);
 
     const sf::FloatRect b = text.getLocalBounds();
-    sf::ConvexShape box = roundedRect(b.width + 30.f, b.height + 30.f, 10.f);
-    box.setPosition(16.f, 16.f);
+    const float boxW = b.width + 30.f, boxH = b.height + 30.f;
+    const float bx = 40.f;
+    const float by = bottom ? (static_cast<float>(ws.y) - boxH - 42.f) : 28.f;
+
+    sf::ConvexShape box = roundedRect(boxW, boxH, 10.f);
+    box.setPosition(bx, by);
     box.setFillColor(sf::Color(20, 20, 20, 215));
     box.setOutlineThickness(2.f);
     box.setOutlineColor(sf::Color(95, 190, 180));  // teal, like the reference UI
     window.draw(box);
+
+    text.setPosition(std::round(bx + 14.f), std::round(by + 12.f));
     window.draw(text);
 }
 
 void Hud::drawGraph(sf::RenderWindow& window, const std::deque<float>& samples,
                     std::size_t capacity, float yRange, const char* label) const {
     const sf::Vector2u ws = window.getSize();
-    // A modest, secondary panel centered along the bottom (the cart/track is the
+    // A modest, secondary panel in the bottom-right corner (the cart/track is the
     // main focus, so the graph is deliberately small).
-    const float halfW = 320.f, graphH = 150.f, bottomMargin = 40.f;
-    const float cx = static_cast<float>(ws.x) * 0.5f;
-    const float x0 = cx - halfW, x1 = cx + halfW;
-    const float y1 = static_cast<float>(ws.y) - bottomMargin, y0 = y1 - graphH;
+    const float gW = 540.f, graphH = 176.f;
+    const float x1 = static_cast<float>(ws.x) - 40.f;
+    const float x0 = x1 - gW;
+    const float y1 = static_cast<float>(ws.y) - 42.f, y0 = y1 - graphH;
     const float ymid = 0.5f * (y0 + y1);
     const float halfH = 0.5f * graphH - 10.f;  // leave a little headroom
     const sf::Color border(230, 150, 90);      // warm accent, like the reference UI
@@ -167,7 +175,7 @@ void Hud::drawGraph(sf::RenderWindow& window, const std::deque<float>& samples,
         // Title + live value, top-left inside the panel.
         char head[64];
         std::snprintf(head, sizeof(head), "%s   %+6.2f", label, n ? samples.back() : 0.f);
-        sf::Text title(head, this->font, 14);
+        sf::Text title(head, this->font, 16);
         title.setFillColor(sf::Color(220, 220, 220));
         title.setPosition(std::round(x0 + 10.f), std::round(y0 + 6.f));
         window.draw(title);
@@ -178,7 +186,7 @@ void Hud::drawGraph(sf::RenderWindow& window, const std::deque<float>& samples,
         for (int i = 0; i < 3; ++i) {
             char vb[16];
             std::snprintf(vb, sizeof(vb), "%+.0f", vals[i]);
-            sf::Text t(vb, this->font, 12);
+            sf::Text t(vb, this->font, 14);
             t.setFillColor(grid);
             const sf::FloatRect b = t.getLocalBounds();
             // Snap to whole pixels for crisp glyphs.

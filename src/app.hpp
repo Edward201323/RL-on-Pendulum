@@ -1,7 +1,11 @@
 #pragma once
 
+#include <sys/types.h>  // pid_t
+
 #include <deque>
+#include <filesystem>
 #include <random>
+#include <string>
 
 #include <SFML/Graphics.hpp>
 
@@ -13,7 +17,8 @@
 
 class App {
 public:
-    App();
+    App(int argc, char** argv);
+    ~App();
     void run();
 
     // Control input — any horizontal force on the cart, in physics units.
@@ -35,6 +40,11 @@ private:
     void resetEpisode();  // start a fresh swing-up attempt from the bottom
     void render();
 
+    void launchTraining();      // spawn the Python trainer as a child process
+    void snapshotPolicy();      // load the latest policy + capture its attempt count
+    std::string displayText() const;   // top-left: shown policy's attempt count + time
+    std::string trainingText() const;  // bottom-left: live training progress
+
     sf::RenderWindow window;
     sf::Clock clock;
     CartPole sim;
@@ -46,6 +56,12 @@ private:
     float episodeTime;        // seconds since the current episode started
     float uprightStreak;      // seconds the pole has been continuously upright
     float bestUprightStreak;  // longest upright streak this session
-    int attemptCount;         // swing-up attempts so far (shown top-left)
+    int shownAttempts;        // training-attempt count behind the on-screen policy
     std::deque<float> forceHistory;  // recent control forces for the time graph
+
+    std::string projectRoot;  // repo root (holds python/), found at startup
+    std::string policyPath;   // projectRoot + "/python/policy.txt"
+    bool trainingMode;        // true = launch training and show its progress
+    int trainingUpdates;      // how many updates to train for
+    pid_t trainingPid;        // child trainer pid (0 = none), killed on exit
 };

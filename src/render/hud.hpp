@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <deque>
+#include <string>
 
 #include <SFML/Graphics.hpp>
 
@@ -24,9 +25,9 @@ public:
     void drawAxis(sf::RenderWindow& window, const TrackLayout& layout,
                   float trackLimit, float pixelsPerMeter) const;
 
-    // Small boxed status (top-left): the current attempt number and how many
-    // seconds into that attempt we are.
-    void drawInfo(sf::RenderWindow& window, int attempt, float seconds) const;
+    // Small boxed status panel showing the given (possibly multi-line) text.
+    // bottom=false anchors it top-left; bottom=true anchors it bottom-left.
+    void drawTextBox(sf::RenderWindow& window, const std::string& text, bool bottom) const;
 
     // Scrolling time graph (bottom): the last `capacity` samples, newest at the
     // right, on a fixed +-yRange vertical scale. Used for the control-force trace.
