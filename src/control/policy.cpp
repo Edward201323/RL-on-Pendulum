@@ -31,13 +31,15 @@ bool Policy::ready() const { return this->loaded; }
 int Policy::act(float x, float velocity, float theta, float angularVelocity) const {
     if (!this->loaded) return 1;  // coast
 
-    // Normalize inputs by the same fixed scale used in training (raw pixels/rad
-    // would otherwise be wildly different magnitudes).
-    const float input[4] = {
+    // Build the observation exactly as python/pendulum_env.py _obs() does:
+    //   [x, x_dot, sin(theta), cos(theta), theta_dot], each divided by obsScale.
+    // sin/cos (not raw theta) so the swing-up angle is continuous across +-pi.
+    const float input[5] = {
         x / this->obsScale[0],
         velocity / this->obsScale[1],
-        theta / this->obsScale[2],
-        angularVelocity / this->obsScale[3],
+        std::sin(theta) / this->obsScale[2],
+        std::cos(theta) / this->obsScale[3],
+        angularVelocity / this->obsScale[4],
     };
 
     // Hidden layer: h = tanh(W1 * input + b1).

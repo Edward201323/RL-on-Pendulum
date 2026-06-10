@@ -17,10 +17,11 @@ public:
     void drawAxis(sf::RenderWindow& window, const TrackLayout& layout,
                   float trackLimit) const;
 
-    // Live data panel (top-left): the full cart-pole state plus balance timing.
+    // Live data panel (top-left): the full cart-pole state, whether the pole is
+    // currently upright, and how long it has stayed up (current/best streak).
     void drawReadout(sf::RenderWindow& window, float x, float velocity,
                      float angle, float angularVelocity, float force,
-                     float attemptTime, float bestTime) const;
+                     bool upright, float uprightStreak, float bestUprightStreak) const;
 
 private:
     sf::Font font;

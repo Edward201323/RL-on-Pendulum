@@ -13,7 +13,7 @@ File format (all whitespace-separated, matching PyTorch's [out, in] weight layou
 
 import torch
 
-from reinforce import Policy, OBS_SCALE, HIDDEN
+from reinforce import Policy, OBS_SCALE
 
 
 def main():
@@ -22,6 +22,8 @@ def main():
     policy.eval()
 
     lin1, lin2 = policy.net[0], policy.net[2]  # net = [Linear, Tanh, Linear]
+    inputs, hidden, outputs = lin1.in_features, lin1.out_features, lin2.out_features
+
     nums = []
     nums += OBS_SCALE.tolist()
     nums += lin1.weight.detach().flatten().tolist()  # [hidden, inputs] row-major
@@ -30,10 +32,10 @@ def main():
     nums += lin2.bias.detach().tolist()
 
     with open("python/policy.txt", "w") as f:
-        f.write(f"4 {HIDDEN} 3\n")
+        f.write(f"{inputs} {hidden} {outputs}\n")
         f.write(" ".join(repr(x) for x in nums))
         f.write("\n")
-    print(f"wrote python/policy.txt ({len(nums)} parameters)")
+    print(f"wrote python/policy.txt ({inputs}-{hidden}-{outputs}, {len(nums)} parameters)")
 
 
 if __name__ == "__main__":

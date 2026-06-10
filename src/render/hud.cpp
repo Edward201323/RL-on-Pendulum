@@ -70,7 +70,7 @@ void Hud::drawAxis(sf::RenderWindow& window, const TrackLayout& layout,
 
 void Hud::drawReadout(sf::RenderWindow& window, float x, float velocity,
                       float angle, float angularVelocity, float force,
-                      float attemptTime, float bestTime) const {
+                      bool upright, float uprightStreak, float bestUprightStreak) const {
     if (!this->hasFont) return;
 
     // angle: 0 = straight up; show degrees for readability.
@@ -81,10 +81,11 @@ void Hud::drawReadout(sf::RenderWindow& window, float x, float velocity,
                   "theta     : %+6.1f deg\n"
                   "theta_dot : %+6.2f rad/s\n"
                   "force     : %+7.0f\n"
-                  "balance   : %6.2f s\n"
-                  "best      : %6.2f s",
+                  "upright   : %s\n"
+                  "up streak : %6.2f s\n"
+                  "best up   : %6.2f s",
                   x, velocity, angle * 180.f / kPi, angularVelocity, force,
-                  attemptTime, bestTime);
+                  upright ? "YES" : "no", uprightStreak, bestUprightStreak);
 
     sf::Text text(buf, this->font, 15);
     text.setFillColor(sf::Color::White);

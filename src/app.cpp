@@ -6,8 +6,10 @@
 #include "render/track.hpp"
 
 namespace {
-constexpr float kMaxInputForce = 4000.f;  // magnitude of the policy's push actions
-constexpr float kFailAngle = 1.5708f;     // |theta| past which a balance attempt fails
+constexpr float kPi = 3.14159265358979323846f;
+constexpr float kMaxInputForce = 4000.f;   // magnitude of the policy's push actions
+constexpr float kEpisodeSeconds = 12.f;    // restart a swing-up attempt after this long
+constexpr float kUprightCos = 0.95f;       // cos(theta) above this counts as "upright"
 }
 
 static sf::ContextSettings makeContextSettings() {
@@ -22,16 +24,17 @@ App::App()
       sim(),
       pendulum(sim.config().length),
       rng(1234),
-      attemptTime(0.f),
-      bestTime(0.f) {
+      episodeTime(0.f),
+      uprightStreak(0.f),
+      bestUprightStreak(0.f) {
     window.setFramerateLimit(60);
 
     // The trained RL policy drives the cart. Run the app from the repo root so
     // this relative path resolves. (See python/export_policy.py.)
     if (this->policy.load("python/policy.txt")) {
-        std::printf("Loaded RL policy from python/policy.txt -- it will balance the pole. "
-                    "Press Space to restart an attempt.\n");
-        this->resetUpright();  // begin balancing from near the top
+        std::printf("Loaded RL policy from python/policy.txt -- it will swing the pole up "
+                    "and balance it. Press Space to restart an attempt.\n");
+        this->resetEpisode();  // begin a swing-up attempt from the bottom
     } else {
         std::printf("No RL policy found (python/policy.txt). Train + export_policy.py first, "
                     "then run from the repo root.\n");
@@ -55,22 +58,22 @@ void App::processEvents() {
         if (event.type == sf::Event::Closed)
             window.close();
 
-        // Space starts a fresh balance attempt from near the top.
+        // Space starts a fresh swing-up attempt from the bottom.
         if (event.type == sf::Event::KeyPressed &&
             event.key.code == sf::Keyboard::Space) {
-            this->resetUpright();
+            this->resetEpisode();
         }
     }
 }
 
-// Drop the cart back to center with the pole just off vertical, so the policy
-// has a fresh balance attempt (it was trained starting near the top). Banks the
-// just-finished attempt as the new best if it lasted longer.
-void App::resetUpright() {
-    if (this->attemptTime > this->bestTime) this->bestTime = this->attemptTime;
-    this->attemptTime = 0.f;
+// Drop the cart back to center with the pole hanging at the bottom (theta = pi)
+// plus a little noise, so the policy has a fresh swing-up attempt (it was trained
+// starting at the bottom).
+void App::resetEpisode() {
+    this->episodeTime = 0.f;
+    this->uprightStreak = 0.f;
     std::uniform_real_distribution<float> dist(-0.05f, 0.05f);
-    this->sim.setState(0.f, 0.f, dist(this->rng), 0.f);
+    this->sim.setState(0.f, 0.f, kPi + dist(this->rng), 0.f);
 }
 
 void App::setControlForce(float force) { this->sim.setControlForce(force); }
@@ -96,10 +99,20 @@ void App::update(float dt) {
     const float actionForce[3] = {-kMaxInputForce, 0.f, kMaxInputForce};
     this->sim.setControlForce(actionForce[action]);
     this->sim.advance(dt);
-    this->attemptTime += dt;
-    // Balance task: once the pole tips past horizontal, start a new attempt.
-    if (std::fabs(this->sim.getAngle()) > kFailAngle) {
-        this->resetUpright();
+
+    // Track how long the pole stays upright (the swing-up goal), and run a fixed
+    // episode length before restarting from the bottom -- mirrors training.
+    this->episodeTime += dt;
+    if (std::cos(this->sim.getAngle()) > kUprightCos) {
+        this->uprightStreak += dt;
+        if (this->uprightStreak > this->bestUprightStreak) {
+            this->bestUprightStreak = this->uprightStreak;
+        }
+    } else {
+        this->uprightStreak = 0.f;
+    }
+    if (this->episodeTime > kEpisodeSeconds) {
+        this->resetEpisode();
     }
 
     // Map the centered physics x onto the screen and position the renderers.
@@ -123,6 +136,8 @@ void App::render() {
 
     this->hud.drawReadout(window, this->sim.getX(), this->sim.getVelocity(),
                           this->sim.getAngle(), this->sim.getAngularVelocity(),
-                          this->sim.getControlForce(), this->attemptTime, this->bestTime);
+                          this->sim.getControlForce(),
+                          std::cos(this->sim.getAngle()) > kUprightCos,
+                          this->uprightStreak, this->bestUprightStreak);
     window.display();
 }

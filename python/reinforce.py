@@ -8,7 +8,7 @@ The idea in one line: run some episodes, then nudge the probability of each
 action up or down in proportion to how good the outcome that followed it was.
 
 Run from the repo root:
-    python3.12 python/reinforce.py            # full run (200 updates)
+    python3.12 python/reinforce.py            # full run (400 updates)
     python3.12 python/reinforce.py 60         # shorter run
 """
 
@@ -18,18 +18,18 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from pendulum_env import PendulumBalanceEnv
+from pendulum_env import PendulumSwingUpEnv
 
 GAMMA = 0.99        # discount: how much a future reward counts vs. an immediate one
 LR = 1e-2
 HIDDEN = 64
 BATCH = 8           # episodes collected per gradient update -> averages out the noise
 
-# Observations are raw physics units: x is in pixels (~hundreds) while theta is
-# in radians (~1). Divide by a fixed scale so every input is roughly O(1) --
-# otherwise the large x / velocity values would swamp the pole angle, which is
-# the signal the policy needs most.
-OBS_SCALE = torch.tensor([100.0, 100.0, 1.0, 5.0])
+# Observations are raw physics units mixed with sin/cos: x is in pixels
+# (~hundreds), sin/cos are already O(1), theta_dot is a few rad/s. Divide by a
+# fixed scale so every input is roughly O(1), otherwise the large x / velocity
+# values would swamp the rest.
+OBS_SCALE = torch.tensor([100.0, 100.0, 1.0, 1.0, 5.0])
 
 
 class Policy(nn.Module):
@@ -38,7 +38,7 @@ class Policy(nn.Module):
     def __init__(self):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(4, HIDDEN), nn.Tanh(),
+            nn.Linear(5, HIDDEN), nn.Tanh(),
             nn.Linear(HIDDEN, 3),
         )
 
@@ -62,7 +62,7 @@ def discounted_returns(rewards):
 
 
 def run_episode(env, policy):
-    """Play one episode; return its per-step log-probs and reward-to-go returns."""
+    """Play one episode; return per-step log-probs, reward-to-go, and total reward."""
     obs, _ = env.reset()
     log_probs, rewards = [], []
     done = False
@@ -74,22 +74,22 @@ def run_episode(env, policy):
         obs, reward, terminated, truncated, _ = env.step(action.item())
         rewards.append(reward)
         done = terminated or truncated
-    return torch.stack(log_probs), discounted_returns(rewards), env.steps
+    return torch.stack(log_probs), discounted_returns(rewards), sum(rewards)
 
 
 def main():
-    updates = int(sys.argv[1]) if len(sys.argv) > 1 else 200
-    env = PendulumBalanceEnv()
+    updates = int(sys.argv[1]) if len(sys.argv) > 1 else 400
+    env = PendulumSwingUpEnv()
     policy = Policy()
     optimizer = torch.optim.Adam(policy.parameters(), lr=LR)
 
     for update in range(updates):
-        log_probs, returns, lengths = [], [], []
+        log_probs, returns, episode_returns = [], [], []
         for _ in range(BATCH):                     # collect a batch of episodes
-            lp, ret, steps = run_episode(env, policy)
+            lp, ret, total = run_episode(env, policy)
             log_probs.append(lp)
             returns.extend(ret)
-            lengths.append(steps)
+            episode_returns.append(total)
 
         log_probs = torch.cat(log_probs)
         returns = torch.tensor(returns, dtype=torch.float32)
@@ -108,7 +108,9 @@ def main():
         optimizer.step()
 
         if (update + 1) % 10 == 0:
-            print(f"update {update + 1:4d}   avg steps: {np.mean(lengths):6.1f}")
+            # Episodes are fixed-length now, so total reward (not length) is the
+            # signal: it climbs as the agent learns to swing up and stay up.
+            print(f"update {update + 1:4d}   avg return: {np.mean(episode_returns):8.1f}")
 
     torch.save(policy.state_dict(), "python/policy.pt")
     print("saved trained policy -> python/policy.pt")

@@ -31,7 +31,7 @@ public:
 private:
     void processEvents();
     void update(float dt);
-    void resetUpright();  // start a fresh balance attempt near the top
+    void resetEpisode();  // start a fresh swing-up attempt from the bottom
     void render();
 
     sf::RenderWindow window;
@@ -39,9 +39,10 @@ private:
     CartPole sim;
     Cart cart;
     Pendulum pendulum;
-    Hud hud;              // on-screen x-axis + live data overlay
-    Policy policy;        // trained RL policy that drives the cart
-    std::mt19937 rng;     // small randomness for the reset angle
-    float attemptTime;    // seconds the pole has balanced in the current attempt
-    float bestTime;       // longest balance so far this session
+    Hud hud;                  // on-screen x-axis + live data overlay
+    Policy policy;            // trained RL policy that drives the cart
+    std::mt19937 rng;         // small randomness for the reset angle
+    float episodeTime;        // seconds since the current episode started
+    float uprightStreak;      // seconds the pole has been continuously upright
+    float bestUprightStreak;  // longest upright streak this session
 };

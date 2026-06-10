@@ -1,8 +1,9 @@
 """Gymnasium environment wrapping the C++ cart-pole physics core.
 
-This is the *balance* task: the pole starts near upright (theta = 0) and the
-agent must keep it there. All dynamics live in the compiled ``cartpole_cpp``
-module; this file only adds the RL contract (observation, reward, termination).
+This is the *swing-up* task: the pole starts hanging at the bottom and the agent
+must pump energy in to swing it up and then balance it at the top. All dynamics
+live in the compiled ``cartpole_cpp`` module; this file only adds the RL
+contract (observation, reward, termination).
 
 Run the smoke test from the repo root (so the built .so is importable)::
 
@@ -36,8 +37,8 @@ DT = 1.0 / 60.0         # physics step, matched to the 60 FPS SFML demo
 ACTION_FORCES = (-F_MAX, 0.0, +F_MAX)
 
 
-class PendulumBalanceEnv(gym.Env):
-    """Balance the pole upright. Episode ends when it tips past +-90 degrees."""
+class PendulumSwingUpEnv(gym.Env):
+    """Swing the pole up from the bottom and balance it. Fixed-length episode."""
 
     metadata = {"render_modes": []}
 
@@ -50,19 +51,20 @@ class PendulumBalanceEnv(gym.Env):
 
         # Three discrete pushes (see ACTION_FORCES).
         self.action_space = spaces.Discrete(3)
-        # Observation is the raw physical state (x, x_dot, theta, theta_dot).
-        # Bounds are loose; only theta is truly bounded (we terminate past pi/2).
-        high = np.array([np.inf, np.inf, np.inf, np.inf], dtype=np.float32)
+        # Observation: (x, x_dot, sin theta, cos theta, theta_dot). We feed
+        # sin/cos instead of the raw angle because the pole rotates through every
+        # angle here -- raw theta wraps discontinuously at +-pi, which a network
+        # can't represent; sin/cos are smooth everywhere.
+        high = np.array([np.inf] * 5, dtype=np.float32)
         self.observation_space = spaces.Box(-high, high, dtype=np.float32)
 
     # -- gymnasium API ------------------------------------------------------
 
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)  # seeds self.np_random
-        # Start near upright with a small random tilt so the policy can't just
-        # memorize one direction. theta = 0 is straight up.
-        theta = float(self.np_random.uniform(-self.init_angle_noise,
-                                              self.init_angle_noise))
+        # Start hanging at the bottom (theta = pi) with a little noise.
+        theta = math.pi + float(self.np_random.uniform(-self.init_angle_noise,
+                                                        self.init_angle_noise))
         self.sim.set_state(0.0, 0.0, theta, 0.0)
         self.steps = 0
         return self._obs(), {}
@@ -73,45 +75,55 @@ class PendulumBalanceEnv(gym.Env):
         self.sim.advance(DT)
         self.steps += 1
 
-        obs = self._obs()
         theta = self.sim.angle
         theta_dot = self.sim.angular_velocity
+        limit = self.sim.config.track_limit
 
-        # Reward: stay upright (theta -> 0), stay calm (small theta_dot), and a
-        # tiny penalty on control effort so the agent doesn't flail at full
-        # force every step. F is normalized so this term is O(1).
-        reward = -(theta ** 2) - 0.1 * (theta_dot ** 2) - 0.001 * (force / F_MAX) ** 2
+        # Swing-up reward. cos(theta) is +1 at the top, -1 hanging down, so the
+        # agent is continuously rewarded for getting (and staying) upright --
+        # wrap-safe, unlike theta**2. The small extra terms keep it centered,
+        # discourage endless spinning, and put a tiny price on control.
+        upright = math.cos(theta)
+        reward = upright
+        reward -= 0.1 * (self.sim.x / limit) ** 2
+        reward -= 0.001 * theta_dot ** 2
+        reward -= 0.001 * (force / F_MAX) ** 2
+        # Bonus for being upright AND slow: rewards actually catching/balancing
+        # at the top rather than just whirling through it.
+        if upright > 0.95:
+            reward += max(0.0, 1.0 - abs(theta_dot) / 2.0)
         if self.sim.boundary_contact() != 0:
-            reward -= 10.0  # slamming into a wall is a bad outcome
+            reward -= 1.0  # don't slam into the walls
 
-        # Terminate when the pole has fallen past horizontal; truncate on the
-        # time limit (gymnasium distinguishes "failed" from "ran out of time").
-        terminated = abs(theta) > math.pi / 2
+        # No failure state -- the pole may legitimately be at any angle. The
+        # episode simply runs for a fixed horizon (truncation).
+        terminated = False
         truncated = self.steps >= self.max_steps
-        return obs, reward, terminated, truncated, {}
+        return self._obs(), reward, terminated, truncated, {}
 
     # -- helpers ------------------------------------------------------------
 
     def _obs(self):
+        theta = self.sim.angle
         return np.array(
-            [self.sim.x, self.sim.velocity, self.sim.angle, self.sim.angular_velocity],
+            [self.sim.x, self.sim.velocity, math.sin(theta), math.cos(theta),
+             self.sim.angular_velocity],
             dtype=np.float32,
         )
 
 
 def _smoke_test():
     """Random-policy rollout to confirm the env and C++ module work together."""
-    env = PendulumBalanceEnv()
+    env = PendulumSwingUpEnv()
     obs, _ = env.reset(seed=0)
     print("initial obs:", obs)
     total = 0.0
-    for _ in range(500):
+    for _ in range(env.max_steps):
         obs, reward, terminated, truncated, _ = env.step(env.action_space.sample())
         total += reward
         if terminated or truncated:
             break
-    print(f"episode ended after {env.steps} steps, total reward {total:.2f} "
-          f"(terminated={terminated}, truncated={truncated})")
+    print(f"episode ended after {env.steps} steps, total reward {total:.2f}")
 
 
 if __name__ == "__main__":
