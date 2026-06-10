@@ -1,5 +1,8 @@
 #pragma once
 
+#include <cstddef>
+#include <deque>
+
 #include <SFML/Graphics.hpp>
 
 #include "render/track.hpp"
@@ -12,16 +15,23 @@ class Hud {
 public:
     Hud();
 
+    // Rounded frame around the play area (cart/track/pole). Drawn first, behind
+    // the scene, so the cart and track read as the main focus.
+    void drawPlayfield(sf::RenderWindow& window) const;
+
     // Position scale (in meters) drawn under the track, aligned to the layout.
     // trackLimit is the cart's max |x| in meters; pixelsPerMeter maps it to screen.
     void drawAxis(sf::RenderWindow& window, const TrackLayout& layout,
                   float trackLimit, float pixelsPerMeter) const;
 
-    // Live data panel (top-left): the full cart-pole state, whether the pole is
-    // currently upright, and how long it has stayed up (current/best streak).
-    void drawReadout(sf::RenderWindow& window, float x, float velocity,
-                     float angle, float angularVelocity, float force,
-                     bool upright, float uprightStreak, float bestUprightStreak) const;
+    // Small boxed status (top-left): the current attempt number and how many
+    // seconds into that attempt we are.
+    void drawInfo(sf::RenderWindow& window, int attempt, float seconds) const;
+
+    // Scrolling time graph (bottom): the last `capacity` samples, newest at the
+    // right, on a fixed +-yRange vertical scale. Used for the control-force trace.
+    void drawGraph(sf::RenderWindow& window, const std::deque<float>& samples,
+                   std::size_t capacity, float yRange, const char* label) const;
 
 private:
     sf::Font font;

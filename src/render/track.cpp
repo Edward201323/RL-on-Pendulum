@@ -30,7 +30,9 @@ static void drawCapsule(sf::RenderWindow &window, sf::Vector2f center,
 TrackLayout computeTrackLayout(const sf::RenderWindow &window) {
     sf::Vector2u size = window.getSize();
     TrackLayout layout;
-    layout.center = sf::Vector2f(size.x / 2.f, size.y * 0.78f);
+    // Keep the cart/track in the upper-middle (the main focus) so the lower
+    // area is free for the smaller control-force time graph.
+    layout.center = sf::Vector2f(size.x / 2.f, size.y * 0.40f);
     layout.width = size.x * 0.8f;
     layout.thickness = 25.f;
     return layout;

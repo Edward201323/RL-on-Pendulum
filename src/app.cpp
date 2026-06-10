@@ -1,6 +1,7 @@
 #include "app.hpp"
 
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 
 #include "render/track.hpp"
@@ -12,10 +13,15 @@ constexpr float kEpisodeSeconds = 12.f;    // restart a swing-up attempt after t
 constexpr float kUprightCos = 0.95f;       // cos(theta) above this counts as "upright"
 
 // Physics runs in SI (meters); rendering is in pixels. This is the one scale
-// that converts between them for drawing. Tuned so the scene fills the window.
-constexpr float kPixelsPerMeter = 300.f;
-constexpr float kCartWidthMeters = 0.2f;
-constexpr float kCartHeightMeters = 0.1f;
+// that converts between them for drawing.
+constexpr float kPixelsPerMeter = 380.f;
+constexpr float kCartWidthMeters = 0.14f;      // small relative to the track
+constexpr float kCartHeightMeters = 0.07f;
+constexpr float kRodThicknessMeters = 0.02f;   // pole rod (visual)
+constexpr float kBobRadiusMeters = 0.05f;      // pole bob (visual)
+
+// Control-force time graph: keep the last ~4 s at 60 FPS.
+constexpr std::size_t kGraphSamples = 240;
 }
 
 static sf::ContextSettings makeContextSettings() {
@@ -25,15 +31,18 @@ static sf::ContextSettings makeContextSettings() {
 }
 
 App::App()
-    : window(sf::VideoMode(1000, 600), "Pendulum Balnacing", sf::Style::Default,
+    : window(sf::VideoMode(1280, 900), "Pendulum Balnacing", sf::Style::Default,
              makeContextSettings()),
       sim(),
       cart(kCartWidthMeters * kPixelsPerMeter, kCartHeightMeters * kPixelsPerMeter),
-      pendulum(sim.config().length * kPixelsPerMeter),
+      pendulum(sim.config().length * kPixelsPerMeter,
+               kRodThicknessMeters * kPixelsPerMeter,
+               kBobRadiusMeters * kPixelsPerMeter),
       rng(1234),
       episodeTime(0.f),
       uprightStreak(0.f),
-      bestUprightStreak(0.f) {
+      bestUprightStreak(0.f),
+      attemptCount(0) {
     window.setFramerateLimit(60);
 
     // The trained RL policy drives the cart. Run the app from the repo root so
@@ -79,6 +88,7 @@ void App::processEvents() {
 void App::resetEpisode() {
     this->episodeTime = 0.f;
     this->uprightStreak = 0.f;
+    ++this->attemptCount;
     std::uniform_real_distribution<float> dist(-0.05f, 0.05f);
     this->sim.setState(0.f, 0.f, kPi + dist(this->rng), 0.f);
 }
@@ -104,6 +114,12 @@ void App::update(float dt) {
                                           this->sim.getAngle(), this->sim.getAngularVelocity());
     this->sim.setControlForce(action * kMaxInputForce);
     this->sim.advance(dt);
+
+    // Record the applied force for the scrolling time graph (keep the last window).
+    this->forceHistory.push_back(this->sim.getControlForce());
+    if (this->forceHistory.size() > kGraphSamples) {
+        this->forceHistory.pop_front();
+    }
 
     // Track how long the pole stays upright (the swing-up goal), and run a fixed
     // episode length before restarting from the bottom -- mirrors training.
@@ -132,6 +148,9 @@ void App::update(float dt) {
 void App::render() {
     window.clear(sf::Color(100, 100, 100));
 
+    // Framed play area (cart/track) as the main focus.
+    this->hud.drawPlayfield(window);
+
     // Draw the track to match the physical limits: cart-center range (+-trackLimit
     // meters) scaled to pixels, widened by half a cart so the body fits the rail.
     TrackLayout layout = computeTrackLayout(window);
@@ -142,10 +161,9 @@ void App::render() {
     cart.draw(window);
     pendulum.draw(window);
 
-    this->hud.drawReadout(window, this->sim.getX(), this->sim.getVelocity(),
-                          this->sim.getAngle(), this->sim.getAngularVelocity(),
-                          this->sim.getControlForce(),
-                          std::cos(this->sim.getAngle()) > kUprightCos,
-                          this->uprightStreak, this->bestUprightStreak);
+    // Boxed control-force graph (bottom) and boxed status (top-left).
+    this->hud.drawGraph(window, this->forceHistory, kGraphSamples, kMaxInputForce,
+                        "Control force (N)");
+    this->hud.drawInfo(window, this->attemptCount, this->episodeTime);
     window.display();
 }

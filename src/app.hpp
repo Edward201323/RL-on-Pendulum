@@ -1,5 +1,6 @@
 #pragma once
 
+#include <deque>
 #include <random>
 
 #include <SFML/Graphics.hpp>
@@ -45,4 +46,6 @@ private:
     float episodeTime;        // seconds since the current episode started
     float uprightStreak;      // seconds the pole has been continuously upright
     float bestUprightStreak;  // longest upright streak this session
+    int attemptCount;         // swing-up attempts so far (shown top-left)
+    std::deque<float> forceHistory;  // recent control forces for the time graph
 };

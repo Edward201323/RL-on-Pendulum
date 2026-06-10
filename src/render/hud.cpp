@@ -5,8 +5,6 @@
 #include <string>
 
 namespace {
-constexpr float kPi = 3.14159265358979323846f;
-
 // Candidate system fonts, in preference order (Menlo is monospace, so the
 // readout columns line up). First one that loads wins.
 const char* kFontPaths[] = {
@@ -15,6 +13,26 @@ const char* kFontPaths[] = {
     "/System/Library/Fonts/Supplemental/Arial.ttf",
     "/System/Library/Fonts/Helvetica.ttc",
 };
+
+// A w x h rounded rectangle with origin at its top-left, as a convex polygon.
+// The caller sets position / fill / outline. Used for all the framed panels.
+sf::ConvexShape roundedRect(float w, float h, float r) {
+    const int cps = 6;  // points per corner
+    const float pi = 3.14159265358979323846f;
+    const float cx[4] = {w - r, w - r, r, r};
+    const float cy[4] = {r, h - r, h - r, r};
+    const float a0[4] = {-90.f, 0.f, 90.f, 180.f};  // arc start angle per corner
+    sf::ConvexShape s;
+    s.setPointCount(cps * 4);
+    int idx = 0;
+    for (int c = 0; c < 4; ++c) {
+        for (int i = 0; i < cps; ++i) {
+            const float a = (a0[c] + 90.f * i / (cps - 1)) * pi / 180.f;
+            s.setPoint(idx++, sf::Vector2f(cx[c] + r * std::cos(a), cy[c] + r * std::sin(a)));
+        }
+    }
+    return s;
+}
 }  // namespace
 
 Hud::Hud() : hasFont(false) {
@@ -24,6 +42,19 @@ Hud::Hud() : hasFont(false) {
             break;
         }
     }
+}
+
+void Hud::drawPlayfield(sf::RenderWindow& window) const {
+    const sf::Vector2u ws = window.getSize();
+    const float x = 40.f, y = 100.f;  // starts below the top-left info box (no overlap)
+    const float w = static_cast<float>(ws.x) - 2.f * x;
+    const float h = static_cast<float>(ws.y) * 0.71f - y;
+    sf::ConvexShape box = roundedRect(w, h, 20.f);
+    box.setPosition(x, y);
+    box.setFillColor(sf::Color(72, 72, 72));
+    box.setOutlineThickness(3.f);
+    box.setOutlineColor(sf::Color(225, 130, 95));  // coral, like the reference UI
+    window.draw(box);
 }
 
 void Hud::drawAxis(sf::RenderWindow& window, const TrackLayout& layout,
@@ -39,13 +70,14 @@ void Hud::drawAxis(sf::RenderWindow& window, const TrackLayout& layout,
     };
     window.draw(baseline, 2, sf::Lines);
 
-    // Ticks every 0.25 m; major (taller, labelled) every 0.5 m. x = 0 is centered.
-    const int steps = static_cast<int>(trackLimit / 0.25f + 0.5f);
+    // Fine ruler: minor ticks every 0.05 m; major (taller, labelled) every
+    // 0.25 m. x = 0 is centered. Denser ticks = higher position resolution.
+    const int steps = static_cast<int>(trackLimit / 0.05f + 0.5f);
     for (int k = -steps; k <= steps; ++k) {
-        const float meters = k * 0.25f;
+        const float meters = k * 0.05f;
         const float sx = layout.center.x + meters * pixelsPerMeter;
-        const bool major = (k % 2 == 0);
-        const float h = major ? 12.f : 6.f;
+        const bool major = (k % 5 == 0);   // every 0.25 m
+        const float h = major ? 12.f : 5.f;
         sf::Vertex tick[] = {
             sf::Vertex(sf::Vector2f(sx, axisY - h), axisColor),
             sf::Vertex(sf::Vector2f(sx, axisY + h), axisColor),
@@ -54,52 +86,105 @@ void Hud::drawAxis(sf::RenderWindow& window, const TrackLayout& layout,
 
         if (major && this->hasFont) {
             char buf[16];
-            std::snprintf(buf, sizeof(buf), "%.1f", meters);
-            sf::Text label(buf, this->font, 12);
+            std::snprintf(buf, sizeof(buf), "%.2f", meters);
+            sf::Text label(buf, this->font, 13);
             label.setFillColor(axisColor);
             const sf::FloatRect b = label.getLocalBounds();
-            label.setOrigin(b.left + b.width / 2.f, 0.f);
-            label.setPosition(sx, axisY + 14.f);
+            // Snap origin and position to whole pixels so glyphs stay crisp.
+            label.setOrigin(std::round(b.left + b.width / 2.f), 0.f);
+            label.setPosition(std::round(sx), std::round(axisY + 16.f));
             window.draw(label);
         }
     }
-
-    if (this->hasFont) {
-        sf::Text caption("cart position x (m)", this->font, 12);
-        caption.setFillColor(axisColor);
-        caption.setPosition(layout.center.x - halfPx, axisY + 32.f);
-        window.draw(caption);
-    }
 }
 
-void Hud::drawReadout(sf::RenderWindow& window, float x, float velocity,
-                      float angle, float angularVelocity, float force,
-                      bool upright, float uprightStreak, float bestUprightStreak) const {
+void Hud::drawInfo(sf::RenderWindow& window, int attempt, float seconds) const {
     if (!this->hasFont) return;
 
-    // angle: 0 = straight up; show degrees for readability.
-    char buf[256];
-    std::snprintf(buf, sizeof(buf),
-                  "x         : %+6.2f m\n"
-                  "x_dot     : %+6.2f m/s\n"
-                  "theta     : %+6.1f deg\n"
-                  "theta_dot : %+6.2f rad/s\n"
-                  "force     : %+6.2f N\n"
-                  "upright   : %s\n"
-                  "up streak : %6.2f s\n"
-                  "best up   : %6.2f s",
-                  x, velocity, angle * 180.f / kPi, angularVelocity, force,
-                  upright ? "YES" : "no", uprightStreak, bestUprightStreak);
-
-    sf::Text text(buf, this->font, 15);
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "Attempt %d\n%5.2f s", attempt, seconds);
+    sf::Text text(buf, this->font, 18);
     text.setFillColor(sf::Color::White);
-    text.setPosition(16.f, 14.f);
+    text.setPosition(30.f, 28.f);
 
-    // Translucent backdrop so the text stays readable over the scene.
     const sf::FloatRect b = text.getLocalBounds();
-    sf::RectangleShape bg(sf::Vector2f(b.width + 22.f, b.height + 22.f));
-    bg.setPosition(8.f, 8.f);
-    bg.setFillColor(sf::Color(0, 0, 0, 130));
-    window.draw(bg);
+    sf::ConvexShape box = roundedRect(b.width + 30.f, b.height + 30.f, 10.f);
+    box.setPosition(16.f, 16.f);
+    box.setFillColor(sf::Color(20, 20, 20, 215));
+    box.setOutlineThickness(2.f);
+    box.setOutlineColor(sf::Color(95, 190, 180));  // teal, like the reference UI
+    window.draw(box);
     window.draw(text);
+}
+
+void Hud::drawGraph(sf::RenderWindow& window, const std::deque<float>& samples,
+                    std::size_t capacity, float yRange, const char* label) const {
+    const sf::Vector2u ws = window.getSize();
+    // A modest, secondary panel centered along the bottom (the cart/track is the
+    // main focus, so the graph is deliberately small).
+    const float halfW = 320.f, graphH = 150.f, bottomMargin = 40.f;
+    const float cx = static_cast<float>(ws.x) * 0.5f;
+    const float x0 = cx - halfW, x1 = cx + halfW;
+    const float y1 = static_cast<float>(ws.y) - bottomMargin, y0 = y1 - graphH;
+    const float ymid = 0.5f * (y0 + y1);
+    const float halfH = 0.5f * graphH - 10.f;  // leave a little headroom
+    const sf::Color border(230, 150, 90);      // warm accent, like the reference UI
+    const sf::Color trace(235, 200, 90);
+    const sf::Color grid(150, 150, 150);
+
+    // Rounded panel with a translucent fill and an accent outline.
+    sf::ConvexShape panel = roundedRect(x1 - x0, y1 - y0, 10.f);
+    panel.setPosition(x0, y0);
+    panel.setFillColor(sf::Color(25, 25, 25, 190));
+    panel.setOutlineThickness(2.f);
+    panel.setOutlineColor(border);
+    window.draw(panel);
+
+    // Zero line.
+    sf::Vertex zero[] = {
+        sf::Vertex(sf::Vector2f(x0, ymid), grid),
+        sf::Vertex(sf::Vector2f(x1, ymid), grid),
+    };
+    window.draw(zero, 2, sf::Lines);
+
+    // Trace: oldest sample on the left, newest at the right edge.
+    const std::size_t n = samples.size();
+    if (n >= 2 && capacity > 1) {
+        sf::VertexArray va(sf::LineStrip, n);
+        for (std::size_t i = 0; i < n; ++i) {
+            const float frac = static_cast<float>(capacity - n + i) /
+                               static_cast<float>(capacity - 1);
+            float v = samples[i];
+            if (v > yRange) v = yRange;
+            if (v < -yRange) v = -yRange;
+            va[i].position = sf::Vector2f(x0 + frac * (x1 - x0), ymid - (v / yRange) * halfH);
+            va[i].color = trace;
+        }
+        window.draw(va);
+    }
+
+    if (this->hasFont) {
+        // Title + live value, top-left inside the panel.
+        char head[64];
+        std::snprintf(head, sizeof(head), "%s   %+6.2f", label, n ? samples.back() : 0.f);
+        sf::Text title(head, this->font, 14);
+        title.setFillColor(sf::Color(220, 220, 220));
+        title.setPosition(std::round(x0 + 10.f), std::round(y0 + 6.f));
+        window.draw(title);
+
+        // Vertical scale labels (+yRange / 0 / -yRange) at the right edge.
+        const float ys[3] = {y0 + 12.f, ymid, y1 - 12.f};
+        const float vals[3] = {yRange, 0.f, -yRange};
+        for (int i = 0; i < 3; ++i) {
+            char vb[16];
+            std::snprintf(vb, sizeof(vb), "%+.0f", vals[i]);
+            sf::Text t(vb, this->font, 12);
+            t.setFillColor(grid);
+            const sf::FloatRect b = t.getLocalBounds();
+            // Snap to whole pixels for crisp glyphs.
+            t.setOrigin(std::round(b.left + b.width), std::round(b.top + b.height / 2.f));
+            t.setPosition(std::round(x1 - 6.f), std::round(ys[i]));
+            window.draw(t);
+        }
+    }
 }
