@@ -42,6 +42,7 @@ private:
 
     void launchTraining();      // spawn the Python trainer as a child process
     void snapshotPolicy();      // load the latest policy + capture its attempt count
+    void writeTrainSpeed() const;      // tell the trainer the current slow-mo delay
     std::string displayText() const;   // top-left: shown policy's attempt count + time
     std::string trainingText() const;  // bottom-left: live training progress
 
@@ -64,4 +65,5 @@ private:
     bool trainingMode;        // true = launch training and show its progress
     int trainingUpdates;      // how many updates to train for
     pid_t trainingPid;        // child trainer pid (0 = none), killed on exit
+    float trainDelay;         // seconds the trainer sleeps per update (0 = full speed)
 };

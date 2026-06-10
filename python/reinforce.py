@@ -18,6 +18,7 @@ visualize the policy improving live.
 
 import os
 import sys
+import time
 
 import numpy as np
 import torch
@@ -96,40 +97,57 @@ def write_status(attempts, avg_return, done, path="python/train_status.txt"):
     os.replace(tmp, path)
 
 
-def discounted_returns(rewards):
-    """Reward-to-go: G_t = r_t + gamma*r_{t+1} + gamma^2*r_{t+2} + ...
+def read_train_speed(path="python/train_speed.txt"):
+    """Per-update sleep (seconds) the app uses to slow training down; 0 = full speed."""
+    try:
+        with open(path) as f:
+            return max(0.0, float(f.read().split()[0]))
+    except Exception:
+        return 0.0
 
-    Each step's return is the total *future* discounted reward from that step
-    onward -- the "how good was it" weight the policy gradient assigns to the
-    action taken at step t. Built back-to-front so each G reuses the next one.
+
+def collect_batch(envs, policy):
+    """Roll out all BATCH episodes in lockstep (no gradients -- fast).
+
+    Every episode is a fixed `max_steps` long, so the envs stay synchronized and
+    we can act on all of them with ONE batched policy forward per timestep instead
+    of one-per-episode-per-step. Returns flattened arrays over all steps:
+    (observations [N,5], actions [N], reward-to-go returns [N], per-episode totals).
     """
-    returns = []
-    g = 0.0
-    for r in reversed(rewards):
-        g = r + GAMMA * g
-        returns.insert(0, g)
-    return returns
+    B = len(envs)
+    T = envs[0].max_steps
+    obs = np.stack([e.reset()[0] for e in envs]).astype(np.float32)  # [B, 5]
+    std = policy.log_std.exp().item()  # constant during the rollout (no updates yet)
 
+    obs_seq = np.empty((T, B, 5), dtype=np.float32)
+    act_seq = np.empty((T, B), dtype=np.float32)
+    rew_seq = np.empty((T, B), dtype=np.float32)
 
-def run_episode(env, policy):
-    """Play one episode; return per-step log-probs, reward-to-go, and total reward."""
-    obs, _ = env.reset()
-    log_probs, rewards = [], []
-    done = False
-    while not done:
-        mean = policy(torch.from_numpy(obs))
-        dist = torch.distributions.Normal(mean, policy.log_std.exp())
-        action = dist.sample()                       # sample a force (exploration)
-        log_probs.append(dist.log_prob(action).sum())  # log pi(a|s) for continuous a
-        obs, reward, terminated, truncated, _ = env.step(action.item())
-        rewards.append(reward)
-        done = terminated or truncated
-    return torch.stack(log_probs), discounted_returns(rewards), sum(rewards)
+    with torch.no_grad():
+        for t in range(T):
+            means = policy(torch.from_numpy(obs)).squeeze(-1).numpy()  # [B]
+            actions = np.random.normal(means, std).astype(np.float32)  # sample [B]
+            obs_seq[t] = obs
+            act_seq[t] = actions
+            for i, e in enumerate(envs):
+                obs[i], rew_seq[t, i], _, _, _ = e.step(float(actions[i]))
+
+    # Reward-to-go G_t = r_t + gamma*r_{t+1} + ... computed back-to-front, per env.
+    returns = np.empty((T, B), dtype=np.float32)
+    g = np.zeros(B, dtype=np.float32)
+    for t in range(T - 1, -1, -1):
+        g = rew_seq[t] + GAMMA * g
+        returns[t] = g
+
+    episode_returns = rew_seq.sum(axis=0)  # total reward per episode [B]
+    return (obs_seq.reshape(-1, 5), act_seq.reshape(-1),
+            returns.reshape(-1), episode_returns)
 
 
 def main():
     updates = int(sys.argv[1]) if len(sys.argv) > 1 else 400
-    env = PendulumSwingUpEnv()
+    torch.set_num_threads(1)  # the net is tiny; threading overhead only slows it down
+    envs = [PendulumSwingUpEnv() for _ in range(BATCH)]  # stepped in lockstep
     policy = Policy()
     optimizer = torch.optim.Adam(policy.parameters(), lr=LR)
 
@@ -139,19 +157,20 @@ def main():
 
     avg = 0.0
     for update in range(updates):
-        log_probs, returns, episode_returns = [], [], []
-        for _ in range(BATCH):                     # collect a batch of episodes
-            lp, ret, total = run_episode(env, policy)
-            log_probs.append(lp)
-            returns.extend(ret)
-            episode_returns.append(total)
+        obs_flat, act_flat, ret_flat, episode_returns = collect_batch(envs, policy)
 
-        log_probs = torch.cat(log_probs)
-        returns = torch.tensor(returns, dtype=torch.float32)
+        # One batched forward/backward over every collected step (the speed win).
+        obs_t = torch.from_numpy(obs_flat)                  # [N, 5]
+        act_t = torch.from_numpy(act_flat)                  # [N]
+        returns = torch.from_numpy(ret_flat)                # [N]
         # Standardize returns across the whole batch. This subtracts a baseline
         # (the batch mean) so an action is rewarded only for beating average, and
         # rescales to unit variance -- the single biggest stabilizer for REINFORCE.
         returns = (returns - returns.mean()) / (returns.std() + 1e-8)
+
+        means = policy(obs_t).squeeze(-1)  # [N], now WITH gradients
+        dist = torch.distributions.Normal(means, policy.log_std.exp())
+        log_probs = dist.log_prob(act_t)   # log pi(a_t|s_t) for every step
 
         # Policy-gradient loss: maximize sum_t log pi(a_t|s_t) * G_t, so minimize
         # its negative. Above-average returns push their action's log-prob up;
@@ -172,6 +191,11 @@ def main():
         if (update + 1) % EXPORT_EVERY == 0:
             write_policy_txt(policy)
             write_status((update + 1) * BATCH, avg, done=False)
+
+        # Optional slow-mo: the app writes a per-update delay via the arrow keys.
+        delay = read_train_speed()
+        if delay > 0.0:
+            time.sleep(delay)
 
     write_policy_txt(policy)
     torch.save(policy.state_dict(), "python/policy.pt")

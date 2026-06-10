@@ -101,7 +101,8 @@ class PendulumSwingUpEnv(gym.Env):
         if upright > 0.95:
             reward += max(0.0, 1.0 - abs(theta_dot) / 2.0)
         if self.sim.boundary_contact() != 0:
-            reward -= 1.0  # don't slam into the walls
+            reward -= 5.0  # strong penalty: hitting a track edge is undesired
+            # (5x the max per-step upright reward, so any wall contact clearly hurts)
 
         # No failure state -- the pole may legitimately be at any angle. The
         # episode simply runs for a fixed horizon (truncation).

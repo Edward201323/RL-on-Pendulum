@@ -14,6 +14,10 @@ const char* kFontPaths[] = {
     "/System/Library/Fonts/Helvetica.ttc",
 };
 
+// Fraction of window height where the play area ends. The bottom panels sit
+// below this, so they never overlap the track regardless of window size.
+constexpr float kPlayBottomFrac = 0.72f;
+
 // A w x h rounded rectangle with origin at its top-left, as a convex polygon.
 // The caller sets position / fill / outline. Used for all the framed panels.
 sf::ConvexShape roundedRect(float w, float h, float r) {
@@ -50,9 +54,9 @@ Hud::Hud() : hasFont(false) {
 
 void Hud::drawPlayfield(sf::RenderWindow& window) const {
     const sf::Vector2u ws = window.getSize();
-    const float x = 40.f, y = 120.f;  // starts below the top-left info box (no overlap)
+    const float x = 40.f, y = 110.f;  // starts below the top-left info box (no overlap)
     const float w = static_cast<float>(ws.x) - 2.f * x;
-    const float h = static_cast<float>(ws.y) * 0.74f - y;
+    const float h = static_cast<float>(ws.y) * kPlayBottomFrac - y;
     sf::ConvexShape box = roundedRect(w, h, 20.f);
     box.setPosition(x, y);
     box.setFillColor(sf::Color(72, 72, 72));
@@ -112,7 +116,7 @@ void Hud::drawTextBox(sf::RenderWindow& window, const std::string& str, bool bot
     const sf::FloatRect b = text.getLocalBounds();
     const float boxW = b.width + 30.f, boxH = b.height + 30.f;
     const float bx = 40.f;
-    const float by = bottom ? (static_cast<float>(ws.y) - boxH - 42.f) : 28.f;
+    const float by = bottom ? (static_cast<float>(ws.y) - boxH - 28.f) : 22.f;
 
     sf::ConvexShape box = roundedRect(boxW, boxH, 10.f);
     box.setPosition(bx, by);
@@ -130,10 +134,13 @@ void Hud::drawGraph(sf::RenderWindow& window, const std::deque<float>& samples,
     const sf::Vector2u ws = window.getSize();
     // A modest, secondary panel in the bottom-right corner (the cart/track is the
     // main focus, so the graph is deliberately small).
-    const float gW = 540.f, graphH = 176.f;
+    const float gW = 540.f;
     const float x1 = static_cast<float>(ws.x) - 40.f;
     const float x0 = x1 - gW;
-    const float y1 = static_cast<float>(ws.y) - 42.f, y0 = y1 - graphH;
+    // Sit just below the play area so it can never overlap the track.
+    const float y0 = static_cast<float>(ws.y) * kPlayBottomFrac + 16.f;
+    const float y1 = static_cast<float>(ws.y) - 28.f;
+    const float graphH = y1 - y0;
     const float ymid = 0.5f * (y0 + y1);
     const float halfH = 0.5f * graphH - 10.f;  // leave a little headroom
     const sf::Color border(230, 150, 90);      // warm accent, like the reference UI

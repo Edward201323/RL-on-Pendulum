@@ -27,7 +27,7 @@ constexpr float kUprightCos = 0.95f;       // cos(theta) above this counts as "u
 
 // Physics runs in SI (meters); rendering is in pixels. This is the one scale
 // that converts between them for drawing.
-constexpr float kPixelsPerMeter = 380.f;
+constexpr float kPixelsPerMeter = 350.f;
 constexpr float kCartWidthMeters = 0.14f;      // small relative to the track
 constexpr float kCartHeightMeters = 0.07f;
 constexpr float kRodThicknessMeters = 0.02f;   // pole rod (visual)
@@ -71,8 +71,8 @@ static std::string findProjectRoot() {
 }
 
 App::App(int argc, char** argv)
-    : window(sf::VideoMode(1280, 900), "Pendulum Balnacing", sf::Style::Default,
-             makeContextSettings()),
+    : window(sf::VideoMode(1200, 740), "Pendulum Balnacing",
+             sf::Style::Titlebar | sf::Style::Close, makeContextSettings()),
       sim(),
       cart(kCartWidthMeters * kPixelsPerMeter, kCartHeightMeters * kPixelsPerMeter),
       pendulum(sim.config().length * kPixelsPerMeter,
@@ -85,7 +85,8 @@ App::App(int argc, char** argv)
       shownAttempts(0),
       trainingMode(true),
       trainingUpdates(600),
-      trainingPid(0) {
+      trainingPid(0),
+      trainDelay(0.f) {
     window.setFramerateLimit(60);
 
     // Args: a number sets the training-update count; "--watch" skips training and
@@ -127,6 +128,7 @@ void App::launchTraining() {
     // an old "Training done" before the new run writes its first update.
     std::error_code ec;
     std::filesystem::remove(this->projectRoot + "/python/train_status.txt", ec);
+    this->writeTrainSpeed();  // start at full speed (trainDelay = 0)
 
     const std::string cmd = "cd '" + this->projectRoot +
                             "' && exec python3.12 python/reinforce.py " +
@@ -171,13 +173,16 @@ std::string App::trainingText() const {
     std::ifstream in(this->projectRoot + "/python/train_status.txt");
     int attempts = 0, done = 0;
     float ret = 0.f;
+    char speed[24];
+    if (this->trainDelay <= 0.f) std::snprintf(speed, sizeof(speed), "speed: full");
+    else std::snprintf(speed, sizeof(speed), "speed: -%.1fs/upd", this->trainDelay);
     if (in >> attempts >> ret >> done) {
-        char buf[80];
-        std::snprintf(buf, sizeof(buf), "%s\nattempts %d\nreturn %.1f",
-                      done ? "Training done" : "Training...", attempts, ret);
+        char buf[112];
+        std::snprintf(buf, sizeof(buf), "%s\nattempts %d\nreturn %.1f\n%s",
+                      done ? "Training done" : "Training...", attempts, ret, speed);
         return std::string(buf);
     }
-    return "Starting training...";
+    return std::string("Starting training...\n") + speed;
 }
 
 // Main loop: handle input, step the physics by the real frame time, redraw.
@@ -197,14 +202,35 @@ void App::processEvents() {
         if (event.type == sf::Event::Closed)
             window.close();
 
+        if (event.type != sf::Event::KeyPressed) continue;
+
         // Space samples the current policy: load the latest weights, label them
         // with the training-attempt count, and restart from the bottom.
-        if (event.type == sf::Event::KeyPressed &&
-            event.key.code == sf::Keyboard::Space) {
+        if (event.key.code == sf::Keyboard::Space) {
             this->snapshotPolicy();
             this->resetEpisode();
+        } else if (this->trainingMode && event.key.code == sf::Keyboard::Up) {
+            this->trainDelay -= 0.1f;  // faster (less sleep), capped at full speed
+            if (this->trainDelay < 0.f) this->trainDelay = 0.f;
+            this->writeTrainSpeed();
+        } else if (this->trainingMode && event.key.code == sf::Keyboard::Down) {
+            this->trainDelay += 0.1f;  // slower (more sleep per update)
+            if (this->trainDelay > 1.5f) this->trainDelay = 1.5f;
+            this->writeTrainSpeed();
         }
     }
+}
+
+// Write the per-update sleep (slow-mo) to a file the trainer polls each update.
+void App::writeTrainSpeed() const {
+    const std::string path = this->projectRoot + "/python/train_speed.txt";
+    const std::string tmp = path + ".tmp";
+    std::ofstream out(tmp);
+    if (!out) return;
+    out << this->trainDelay << "\n";
+    out.close();
+    std::error_code ec;
+    std::filesystem::rename(tmp, path, ec);  // atomic; no torn reads
 }
 
 // Drop the cart back to center with the pole hanging at the bottom (theta = pi)
