@@ -29,8 +29,12 @@ if os.path.isdir(_build) and _build not in sys.path:
 
 import cartpole_cpp  # noqa: E402  (must follow the sys.path tweak above)
 
-F_MAX = 4000.0          # max push magnitude (the action is scaled by this)
-DT = 1.0 / 60.0         # physics step, matched to the 60 FPS SFML demo
+# Max push force in NEWTONS (the [-1,1] action is scaled by this). ~0.8x the
+# cart's weight (M*g = 1.0*9.81 = 9.81 N) -> max accel ~0.82 g. A modest, realistic
+# servo: it can't muscle the pole up, so swing-up needs real energy-pumping.
+# MUST match kMaxInputForce in src/app.cpp (training vs. playback force scale).
+F_MAX = 5.0
+DT = 1.0 / 60.0         # physics step (s), matched to the 60 FPS SFML demo
 
 # Continuous action: a single value in [-1, 1] scaled to a horizontal force on
 # the cart (-1 = full push left, +1 = full push right, 0 = coast). The policy

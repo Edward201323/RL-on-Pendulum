@@ -7,9 +7,15 @@
 
 namespace {
 constexpr float kPi = 3.14159265358979323846f;
-constexpr float kMaxInputForce = 4000.f;   // magnitude of the policy's push actions
+constexpr float kMaxInputForce = 5.f;      // Newtons; MUST match F_MAX in pendulum_env.py
 constexpr float kEpisodeSeconds = 12.f;    // restart a swing-up attempt after this long
 constexpr float kUprightCos = 0.95f;       // cos(theta) above this counts as "upright"
+
+// Physics runs in SI (meters); rendering is in pixels. This is the one scale
+// that converts between them for drawing. Tuned so the scene fills the window.
+constexpr float kPixelsPerMeter = 300.f;
+constexpr float kCartWidthMeters = 0.2f;
+constexpr float kCartHeightMeters = 0.1f;
 }
 
 static sf::ContextSettings makeContextSettings() {
@@ -22,7 +28,8 @@ App::App()
     : window(sf::VideoMode(1000, 600), "Pendulum Balnacing", sf::Style::Default,
              makeContextSettings()),
       sim(),
-      pendulum(sim.config().length),
+      cart(kCartWidthMeters * kPixelsPerMeter, kCartHeightMeters * kPixelsPerMeter),
+      pendulum(sim.config().length * kPixelsPerMeter),
       rng(1234),
       episodeTime(0.f),
       uprightStreak(0.f),
@@ -87,11 +94,9 @@ float App::getPendulumAngularVelocity() const { return this->sim.getAngularVeloc
 // Advance one frame: sync the track limits, let the policy act, step the
 // physics, then position the renderers from the new physics state.
 void App::update(float dt) {
-    // The visible track defines the cart's travel limits. Feed them to the
-    // physics core (centered coords: x = 0 is track center) so the simulated
-    // walls line up with the drawn ones even when the window is resized.
+    // The track length is a fixed physical property (config.trackLimit, in
+    // meters) -- not derived from the window -- so the simulated walls are real.
     TrackLayout layout = computeTrackLayout(window);
-    this->sim.config().trackLimit = layout.width / 2.f - this->cart.getWidth() / 2.f;
 
     // The policy outputs a normalized force in [-1, 1] each frame; scale it to
     // the cart's force command (it now chooses direction AND magnitude).
@@ -115,8 +120,8 @@ void App::update(float dt) {
         this->resetEpisode();
     }
 
-    // Map the centered physics x onto the screen and position the renderers.
-    const float screenX = layout.center.x + this->sim.getX();
+    // Map the centered physics x (meters) onto the screen and position renderers.
+    const float screenX = layout.center.x + this->sim.getX() * kPixelsPerMeter;
     this->cart.setPosition(screenX, layout.center.y);
     this->pendulum.setPivot(this->cart.getPivot());
     this->pendulum.setAngle(this->sim.getAngle());
@@ -126,10 +131,13 @@ void App::update(float dt) {
 // then the live data overlay on top.
 void App::render() {
     window.clear(sf::Color(100, 100, 100));
-    drawTrack(window);
 
-    const TrackLayout layout = computeTrackLayout(window);
-    this->hud.drawAxis(window, layout, this->sim.config().trackLimit);
+    // Draw the track to match the physical limits: cart-center range (+-trackLimit
+    // meters) scaled to pixels, widened by half a cart so the body fits the rail.
+    TrackLayout layout = computeTrackLayout(window);
+    layout.width = 2.f * this->sim.config().trackLimit * kPixelsPerMeter + this->cart.getWidth();
+    drawTrack(window, layout);
+    this->hud.drawAxis(window, layout, this->sim.config().trackLimit, kPixelsPerMeter);
 
     cart.draw(window);
     pendulum.draw(window);

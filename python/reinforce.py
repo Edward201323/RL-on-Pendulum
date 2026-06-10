@@ -25,11 +25,10 @@ LR = 1e-2
 HIDDEN = 64
 BATCH = 8           # episodes collected per gradient update -> averages out the noise
 
-# Observations are raw physics units mixed with sin/cos: x is in pixels
-# (~hundreds), sin/cos are already O(1), theta_dot is a few rad/s. Divide by a
-# fixed scale so every input is roughly O(1), otherwise the large x / velocity
-# values would swamp the rest.
-OBS_SCALE = torch.tensor([100.0, 100.0, 1.0, 1.0, 5.0])
+# Observations are SI mixed with sin/cos: x ~ +-1 m, x_dot ~ a few m/s, sin/cos
+# are O(1), theta_dot ~ a few rad/s. Divide by a fixed per-component scale so
+# every input is roughly O(1) (keeps the network's inputs balanced).
+OBS_SCALE = torch.tensor([1.0, 2.0, 1.0, 1.0, 6.0])
 
 
 class Policy(nn.Module):

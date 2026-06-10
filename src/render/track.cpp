@@ -37,8 +37,8 @@ TrackLayout computeTrackLayout(const sf::RenderWindow &window) {
 }
 
 // Draw the rail as a white capsule with a darker inner capsule (the stroke look).
-void drawTrack(sf::RenderWindow &window) {
-    TrackLayout layout = computeTrackLayout(window);
+// Layout (center, width, thickness) is supplied by the caller in pixels.
+void drawTrack(sf::RenderWindow &window, const TrackLayout &layout) {
     float strokeWidth = 4.f;
     float innerThickness = layout.thickness - 2.f * strokeWidth;
     sf::Color outerColor = sf::Color::White;

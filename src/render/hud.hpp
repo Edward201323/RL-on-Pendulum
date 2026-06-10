@@ -12,10 +12,10 @@ class Hud {
 public:
     Hud();
 
-    // Position scale drawn under the track, aligned to the current layout.
-    // trackLimit is the cart's max |x| (physics px), so the axis spans the walls.
+    // Position scale (in meters) drawn under the track, aligned to the layout.
+    // trackLimit is the cart's max |x| in meters; pixelsPerMeter maps it to screen.
     void drawAxis(sf::RenderWindow& window, const TrackLayout& layout,
-                  float trackLimit) const;
+                  float trackLimit, float pixelsPerMeter) const;
 
     // Live data panel (top-left): the full cart-pole state, whether the pole is
     // currently upright, and how long it has stayed up (current/best streak).

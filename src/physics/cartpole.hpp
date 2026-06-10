@@ -5,21 +5,23 @@
 // for the dynamics; both the SFML visualizer and the Python trainer drive it,
 // so a balanced genome behaves identically in training and in the demo.
 //
-// Units are pixels and seconds (matching the SFML visualizer).
+// Units are SI: meters, kilograms, seconds, Newtons. Values are calibrated to a
+// realistic desktop cart-pole so the dynamics transfer toward a real rig. The
+// SFML app scales meters to pixels for rendering (see kPixelsPerMeter in app.cpp).
 // State = (x, xdot, theta, thetadot):
-//   x      cart-center offset from track center (px), 0 = centered
+//   x      cart-center offset from track center (m), 0 = centered
 //   theta  pole angle (rad), 0 = straight up, +-pi = hanging down, positive = clockwise tilt
 struct CartPoleConfig {
-    float gravity = 1500.f;            // px/s^2
-    float cartMass = 1.0f;             // M
-    float bobMass = 0.2f;              // m, point mass at the rod tip
-    float length = 130.f;              // L, rod length (px)
-    float poleDamping = 0.4f;          // viscous angular damping (per second)
-    float cartFriction = 1.0f;         // viscous cart-track coefficient (force per velocity)
-    float trackLimit = 370.f;          // max |x| the cart center may reach (px)
+    float gravity = 9.81f;             // m/s^2
+    float cartMass = 1.0f;             // M (kg)
+    float bobMass = 0.2f;              // m (kg), point mass at the rod tip
+    float length = 0.5f;               // L, rod length (m)
+    float poleDamping = 0.05f;         // viscous angular damping (1/s), low bearing friction
+    float cartFriction = 0.1f;         // viscous cart friction (N per m/s)
+    float trackLimit = 1.0f;           // max |x| the cart center may reach (m)
     float initialAngle = 3.14159265f;  // pose set by reset(): pi rad = hanging straight down
     float failAngle = 1.5708f;         // |theta| past which isDone() reports a fall (rad, ~90 deg)
-    float maxDt = 0.1f;                // dt cap so a long frame can't blow up the integrator
+    float maxDt = 0.1f;                // dt cap so a long frame can't blow up the integrator (s)
     int   substeps = 4;                // integrator substeps per advance()
 };
 

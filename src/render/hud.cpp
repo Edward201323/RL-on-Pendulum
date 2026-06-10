@@ -27,22 +27,24 @@ Hud::Hud() : hasFont(false) {
 }
 
 void Hud::drawAxis(sf::RenderWindow& window, const TrackLayout& layout,
-                   float trackLimit) const {
+                   float trackLimit, float pixelsPerMeter) const {
     const float axisY = layout.center.y + 45.f;
     const sf::Color axisColor(210, 210, 210);
+    const float halfPx = trackLimit * pixelsPerMeter;
 
-    // Baseline spanning the cart's reachable range [-trackLimit, +trackLimit].
+    // Baseline spanning the cart's reachable range [-trackLimit, +trackLimit] (m).
     sf::Vertex baseline[] = {
-        sf::Vertex(sf::Vector2f(layout.center.x - trackLimit, axisY), axisColor),
-        sf::Vertex(sf::Vector2f(layout.center.x + trackLimit, axisY), axisColor),
+        sf::Vertex(sf::Vector2f(layout.center.x - halfPx, axisY), axisColor),
+        sf::Vertex(sf::Vector2f(layout.center.x + halfPx, axisY), axisColor),
     };
     window.draw(baseline, 2, sf::Lines);
 
-    // Ticks every 50 px; major (taller, labelled) every 100. x = 0 is centered.
-    for (int p = -300; p <= 300; p += 50) {
-        if (static_cast<float>(std::abs(p)) > trackLimit) continue;
-        const float sx = layout.center.x + p;
-        const bool major = (p % 100 == 0);
+    // Ticks every 0.25 m; major (taller, labelled) every 0.5 m. x = 0 is centered.
+    const int steps = static_cast<int>(trackLimit / 0.25f + 0.5f);
+    for (int k = -steps; k <= steps; ++k) {
+        const float meters = k * 0.25f;
+        const float sx = layout.center.x + meters * pixelsPerMeter;
+        const bool major = (k % 2 == 0);
         const float h = major ? 12.f : 6.f;
         sf::Vertex tick[] = {
             sf::Vertex(sf::Vector2f(sx, axisY - h), axisColor),
@@ -51,7 +53,9 @@ void Hud::drawAxis(sf::RenderWindow& window, const TrackLayout& layout,
         window.draw(tick, 2, sf::Lines);
 
         if (major && this->hasFont) {
-            sf::Text label(std::to_string(p), this->font, 12);
+            char buf[16];
+            std::snprintf(buf, sizeof(buf), "%.1f", meters);
+            sf::Text label(buf, this->font, 12);
             label.setFillColor(axisColor);
             const sf::FloatRect b = label.getLocalBounds();
             label.setOrigin(b.left + b.width / 2.f, 0.f);
@@ -61,9 +65,9 @@ void Hud::drawAxis(sf::RenderWindow& window, const TrackLayout& layout,
     }
 
     if (this->hasFont) {
-        sf::Text caption("cart position x (px)", this->font, 12);
+        sf::Text caption("cart position x (m)", this->font, 12);
         caption.setFillColor(axisColor);
-        caption.setPosition(layout.center.x - trackLimit, axisY + 32.f);
+        caption.setPosition(layout.center.x - halfPx, axisY + 32.f);
         window.draw(caption);
     }
 }
@@ -76,11 +80,11 @@ void Hud::drawReadout(sf::RenderWindow& window, float x, float velocity,
     // angle: 0 = straight up; show degrees for readability.
     char buf[256];
     std::snprintf(buf, sizeof(buf),
-                  "x         : %+7.1f px\n"
-                  "x_dot     : %+7.1f px/s\n"
+                  "x         : %+6.2f m\n"
+                  "x_dot     : %+6.2f m/s\n"
                   "theta     : %+6.1f deg\n"
                   "theta_dot : %+6.2f rad/s\n"
-                  "force     : %+7.0f\n"
+                  "force     : %+6.2f N\n"
                   "upright   : %s\n"
                   "up streak : %6.2f s\n"
                   "best up   : %6.2f s",

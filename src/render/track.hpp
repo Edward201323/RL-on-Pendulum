@@ -9,4 +9,4 @@ struct TrackLayout {
 };
 
 TrackLayout computeTrackLayout(const sf::RenderWindow &window);
-void drawTrack(sf::RenderWindow &window);
+void drawTrack(sf::RenderWindow &window, const TrackLayout &layout);
