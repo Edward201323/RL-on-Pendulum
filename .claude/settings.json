@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(brew --prefix sfml)",
+      "Bash(ls /opt/homebrew/opt/sfml/include/SFML/ 2>/dev/null | head -20 && echo \"---\" && ls /opt/homebrew/opt/sfml/lib/ 2>/dev/null | head -5 && echo \"---\" && cat \"/Users/edwardsong/Projects/Inverted Pendulum/.vscode/tasks.json\")",
+      "Read(//opt/homebrew/opt/sfml/include/**)",
+      "Read(//opt/homebrew/opt/sfml/**)",
+      "Bash(ls -la /opt/homebrew/opt/sfml/ 2>&1 | head -20 && echo \"---include---\" && find /opt/homebrew -name \"Graphics.hpp\" -path \"*/SFML/*\" 2>/dev/null | head -5 && echo \"---libs---\" && find /opt/homebrew -name \"libsfml-graphics*\" 2>/dev/null | head -5)",
+      "Read(//opt/homebrew/**)",
+      "Bash(brew info *)",
+      "Bash(grep -E \"^\\(main|SFMLTest\\)$\")",
+      "Bash(cmake --build .)",
+      "Bash(cmake --build build)",
+      "Bash(python3.12 python/cartpole_env.py)",
+      "Bash(python3.12 --version)",
+      "Bash(python3.12 -c \"import torch, gymnasium, numpy, matplotlib; print\\('deps ok'\\)\")",
+      "Bash(python3.12 -c ' *)",
+      "Bash(python3.12 python/pendulum_env.py)",
+      "Bash(time python3.12 python/reinforce.py 400)"
+    ]
+  }
+}

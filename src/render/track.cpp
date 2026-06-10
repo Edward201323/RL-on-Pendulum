@@ -26,6 +26,7 @@ static void drawCapsule(sf::RenderWindow &window, sf::Vector2f center,
     window.draw(rightCap);
 }
 
+// Work out where the track sits and how wide it is for the current window size.
 TrackLayout computeTrackLayout(const sf::RenderWindow &window) {
     sf::Vector2u size = window.getSize();
     TrackLayout layout;
@@ -35,6 +36,7 @@ TrackLayout computeTrackLayout(const sf::RenderWindow &window) {
     return layout;
 }
 
+// Draw the rail as a white capsule with a darker inner capsule (the stroke look).
 void drawTrack(sf::RenderWindow &window) {
     TrackLayout layout = computeTrackLayout(window);
     float strokeWidth = 4.f;

@@ -1,14 +1,13 @@
 #include "app.hpp"
 
 #include <cmath>
+#include <cstdio>
 
 #include "render/track.hpp"
 
 namespace {
-constexpr float kGravity = 1500.f;        // px/s^2
-constexpr float kMaxInputForce = 4000.f;  // magnitude the keyboard maps to
-constexpr float kInitialAngle = 0.15f;    // small tilt so the pendulum falls
-constexpr int kPhysicsSubsteps = 4;       // substeps per frame for stability
+constexpr float kMaxInputForce = 4000.f;  // magnitude of the policy's push actions
+constexpr float kFailAngle = 1.5708f;     // |theta| past which a balance attempt fails
 }
 
 static sf::ContextSettings makeContextSettings() {
@@ -20,116 +19,110 @@ static sf::ContextSettings makeContextSettings() {
 App::App()
     : window(sf::VideoMode(1000, 600), "Pendulum Balnacing", sf::Style::Default,
              makeContextSettings()),
-      controlForce(0.f) {
+      sim(),
+      pendulum(sim.config().length),
+      rng(1234),
+      attemptTime(0.f),
+      bestTime(0.f) {
     window.setFramerateLimit(60);
-    pendulum.setAngle(kInitialAngle);
+
+    // The trained RL policy drives the cart. Run the app from the repo root so
+    // this relative path resolves. (See python/export_policy.py.)
+    if (this->policy.load("python/policy.txt")) {
+        std::printf("Loaded RL policy from python/policy.txt -- it will balance the pole. "
+                    "Press Space to restart an attempt.\n");
+        this->resetUpright();  // begin balancing from near the top
+    } else {
+        std::printf("No RL policy found (python/policy.txt). Train + export_policy.py first, "
+                    "then run from the repo root.\n");
+    }
 }
 
+// Main loop: handle input, step the physics by the real frame time, redraw.
 void App::run() {
     while (window.isOpen()) {
         processEvents(); // lib
         float dt = clock.restart().asSeconds();
         update(dt);
-        render(); 
+        render();
     }
 }
 
+// Drain the window's event queue; close the window when asked to quit.
 void App::processEvents() {
     sf::Event event;
     while (window.pollEvent(event)) {
         if (event.type == sf::Event::Closed)
             window.close();
+
+        // Space starts a fresh balance attempt from near the top.
+        if (event.type == sf::Event::KeyPressed &&
+            event.key.code == sf::Keyboard::Space) {
+            this->resetUpright();
+        }
     }
 }
 
-void App::setControlForce(float force) { controlForce = force; }
-float App::getControlForce() const { return controlForce; }
-
-float App::getCartX() const { return cart.getX(); }
-float App::getCartVelocity() const { return cart.getVelocity(); }
-float App::getPendulumAngle() const { return pendulum.getAngle(); }
-float App::getPendulumAngularVelocity() const { return pendulum.getAngularVelocity(); }
-
-void App::pollKeyboardControl() {
-    float dir = 0.f;
-    if (sf::Keyboard::isKeyPressed(sf::Keyboard::Left)){
-        dir -= 1.f;
-    }
-    if (sf::Keyboard::isKeyPressed(sf::Keyboard::Right)){
-        dir += 1.f;
-    }
-    setControlForce(dir * kMaxInputForce);
+// Drop the cart back to center with the pole just off vertical, so the policy
+// has a fresh balance attempt (it was trained starting near the top). Banks the
+// just-finished attempt as the new best if it lasted longer.
+void App::resetUpright() {
+    if (this->attemptTime > this->bestTime) this->bestTime = this->attemptTime;
+    this->attemptTime = 0.f;
+    std::uniform_real_distribution<float> dist(-0.05f, 0.05f);
+    this->sim.setState(0.f, 0.f, dist(this->rng), 0.f);
 }
 
-void App::physicsStep(float h) {
-    // Coupled cart-pole: point-mass bob at length L, massless rod, frictionless cart.
-    //   xddot   = (F + m L w^2 sin(t) - m g sin(t) cos(t)) / (M + m sin^2(t))
-    //   thddot  = (g sin(t) - xddot cos(t)) / L  - c * w
-    // F is the externally-supplied control input — set via setControlForce
-    // (keyboard, scripted test, RL policy). The cart's velocity then emerges
-    // from integration; it is not commanded directly.
-    const float F = this->controlForce;
-    const float t = this->pendulum.getAngle();
-    const float w = this->pendulum.getAngularVelocity();
-    const float v = this->cart.getVelocity();
-    const float s = std::sin(t);
-    const float c = std::cos(t);
-    const float M = this->cart.getMass();
-    const float m = this->pendulum.getBobMass();
-    const float L = this->pendulum.getLength();
-    const float damping = this->pendulum.getDamping();
-    const float mu = this->cart.getFriction();
+void App::setControlForce(float force) { this->sim.setControlForce(force); }
+float App::getControlForce() const { return this->sim.getControlForce(); }
 
-    // Viscous cart-track friction: a force -mu*v added to the cart's net horizontal force.
-    const float Fnet = F - mu * v;
-    float xddot = (Fnet + m * L * w * w * s - m * kGravity * s * c) / (M + m * s * s);
+float App::getCartX() const { return this->sim.getX(); }
+float App::getCartVelocity() const { return this->sim.getVelocity(); }
+float App::getPendulumAngle() const { return this->sim.getAngle(); }
+float App::getPendulumAngularVelocity() const { return this->sim.getAngularVelocity(); }
 
-    // Wall contact: if the cart is pinned against a wall and the net force
-    // would push it further into the wall, the wall's normal force cancels
-    // it — the cart's true acceleration is 0. Propagate that to thddot so the
-    // pendulum doesn't feel a pivot acceleration that physically can't occur.
-    const int contact = this->cart.boundaryContact();
-    if ((contact < 0 && xddot < 0.f) || (contact > 0 && xddot > 0.f)) {
-        xddot = 0.f;
-        this->cart.setVelocity(0.f);
-    }
-
-    const float thddot = (kGravity * s - xddot * c) / L - damping * w;
-
-    // Semi-implicit Euler: update velocities first, then positions from new velocities.
-    const float vNew = this->cart.getVelocity() + xddot * h;
-    this->cart.setVelocity(vNew);
-    this->cart.setX(this->cart.getX() + vNew * h);
-    if (this->cart.clampToBounds()) {
-        this->cart.setVelocity(0.f);
-    }
-
-    const float wNew = w + thddot * h;
-    this->pendulum.setAngularVelocity(wNew);
-    this->pendulum.setAngle(t + wNew * h);
-}
-
+// Advance one frame: sync the track limits, let the policy act, step the
+// physics, then position the renderers from the new physics state.
 void App::update(float dt) {
+    // The visible track defines the cart's travel limits. Feed them to the
+    // physics core (centered coords: x = 0 is track center) so the simulated
+    // walls line up with the drawn ones even when the window is resized.
     TrackLayout layout = computeTrackLayout(window);
-    cart.setBounds(layout.center.x - layout.width / 2.f, layout.center.x + layout.width / 2.f, layout.center.y);
+    this->sim.config().trackLimit = layout.width / 2.f - this->cart.getWidth() / 2.f;
 
-    pollKeyboardControl();
-
-    // Cap dt so a long pause can't blow up the integrator, then substep.
-    if (dt > 0.1f) dt = 0.1f;
-    const float h = dt / kPhysicsSubsteps;
-    for (int i = 0; i < kPhysicsSubsteps; ++i) {
-        physicsStep(h);
+    // The policy picks a discrete action each frame; map it to a cart force.
+    const int action = this->policy.act(this->sim.getX(), this->sim.getVelocity(),
+                                        this->sim.getAngle(), this->sim.getAngularVelocity());
+    const float actionForce[3] = {-kMaxInputForce, 0.f, kMaxInputForce};
+    this->sim.setControlForce(actionForce[action]);
+    this->sim.advance(dt);
+    this->attemptTime += dt;
+    // Balance task: once the pole tips past horizontal, start a new attempt.
+    if (std::fabs(this->sim.getAngle()) > kFailAngle) {
+        this->resetUpright();
     }
 
-    pendulum.setPivot(cart.getPivot());
+    // Map the centered physics x onto the screen and position the renderers.
+    const float screenX = layout.center.x + this->sim.getX();
+    this->cart.setPosition(screenX, layout.center.y);
+    this->pendulum.setPivot(this->cart.getPivot());
+    this->pendulum.setAngle(this->sim.getAngle());
 }
 
+// Draw the current frame: background, track + position axis, cart, pendulum,
+// then the live data overlay on top.
 void App::render() {
     window.clear(sf::Color(100, 100, 100));
     drawTrack(window);
 
+    const TrackLayout layout = computeTrackLayout(window);
+    this->hud.drawAxis(window, layout, this->sim.config().trackLimit);
+
     cart.draw(window);
     pendulum.draw(window);
+
+    this->hud.drawReadout(window, this->sim.getX(), this->sim.getVelocity(),
+                          this->sim.getAngle(), this->sim.getAngularVelocity(),
+                          this->sim.getControlForce(), this->attemptTime, this->bestTime);
     window.display();
 }
