@@ -29,12 +29,12 @@ if os.path.isdir(_build) and _build not in sys.path:
 
 import cartpole_cpp  # noqa: E402  (must follow the sys.path tweak above)
 
-F_MAX = 4000.0          # magnitude of the push the discrete actions apply
+F_MAX = 4000.0          # max push magnitude (the action is scaled by this)
 DT = 1.0 / 60.0         # physics step, matched to the 60 FPS SFML demo
 
-# Discrete action -> horizontal force on the cart.
-#   0 = push left, 1 = coast (no force), 2 = push right
-ACTION_FORCES = (-F_MAX, 0.0, +F_MAX)
+# Continuous action: a single value in [-1, 1] scaled to a horizontal force on
+# the cart (-1 = full push left, +1 = full push right, 0 = coast). The policy
+# chooses both direction AND magnitude.
 
 
 class PendulumSwingUpEnv(gym.Env):
@@ -49,8 +49,8 @@ class PendulumSwingUpEnv(gym.Env):
         self.max_steps = int(max_steps)
         self.steps = 0
 
-        # Three discrete pushes (see ACTION_FORCES).
-        self.action_space = spaces.Discrete(3)
+        # One continuous force in [-1, 1] (scaled by F_MAX); see top of file.
+        self.action_space = spaces.Box(-1.0, 1.0, shape=(1,), dtype=np.float32)
         # Observation: (x, x_dot, sin theta, cos theta, theta_dot). We feed
         # sin/cos instead of the raw angle because the pole rotates through every
         # angle here -- raw theta wraps discontinuously at +-pi, which a network
@@ -70,7 +70,11 @@ class PendulumSwingUpEnv(gym.Env):
         return self._obs(), {}
 
     def step(self, action):
-        force = ACTION_FORCES[int(action)]
+        # action may arrive as a scalar or a length-1 array; clip to [-1, 1] and
+        # scale to a force. (The policy samples from an unbounded Gaussian, so
+        # clipping here is what actually bounds the applied force.)
+        a = float(np.asarray(action).reshape(-1)[0])
+        force = max(-1.0, min(1.0, a)) * F_MAX
         self.sim.set_control_force(force)
         self.sim.advance(DT)
         self.steps += 1

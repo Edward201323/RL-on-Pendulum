@@ -14,9 +14,10 @@ public:
     bool load(const std::string& path);
     bool ready() const;
 
-    // Greedy action for a cart-pole state: 0 = push left, 1 = coast, 2 = push
-    // right (the argmax of the output logits). Returns 1 (coast) if not loaded.
-    int act(float x, float velocity, float theta, float angularVelocity) const;
+    // Greedy normalized force in [-1, 1] for a cart-pole state -- the policy's
+    // mean action (deterministic for playback). Multiply by the max force to get
+    // the cart command. Returns 0 (coast) if no policy is loaded.
+    float act(float x, float velocity, float theta, float angularVelocity) const;
 
 private:
     bool loaded = false;

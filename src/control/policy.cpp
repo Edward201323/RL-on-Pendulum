@@ -28,8 +28,8 @@ bool Policy::load(const std::string& path) {
 
 bool Policy::ready() const { return this->loaded; }
 
-int Policy::act(float x, float velocity, float theta, float angularVelocity) const {
-    if (!this->loaded) return 1;  // coast
+float Policy::act(float x, float velocity, float theta, float angularVelocity) const {
+    if (!this->loaded) return 0.f;  // coast
 
     // Build the observation exactly as python/pendulum_env.py _obs() does:
     //   [x, x_dot, sin(theta), cos(theta), theta_dot], each divided by obsScale.
@@ -52,18 +52,13 @@ int Policy::act(float x, float velocity, float theta, float angularVelocity) con
         h[o] = std::tanh(sum);
     }
 
-    // Output layer: logits = W2 * h + b2; greedy = the largest logit.
-    int best = 0;
-    float bestVal = 0.f;
-    for (int o = 0; o < this->outputs; ++o) {
-        float sum = this->b2[o];
-        for (int i = 0; i < this->hidden; ++i) {
-            sum += this->w2[o * this->hidden + i] * h[i];
-        }
-        if (o == 0 || sum > bestVal) {
-            bestVal = sum;
-            best = o;
-        }
+    // Output layer: a single value = the mean action (the policy's force command,
+    // in normalized units). Clamp to the [-1, 1] range training clipped to.
+    float out = this->b2[0];
+    for (int i = 0; i < this->hidden; ++i) {
+        out += this->w2[i] * h[i];
     }
-    return best;
+    if (out < -1.f) out = -1.f;
+    if (out > 1.f) out = 1.f;
+    return out;
 }

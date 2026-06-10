@@ -93,11 +93,11 @@ void App::update(float dt) {
     TrackLayout layout = computeTrackLayout(window);
     this->sim.config().trackLimit = layout.width / 2.f - this->cart.getWidth() / 2.f;
 
-    // The policy picks a discrete action each frame; map it to a cart force.
-    const int action = this->policy.act(this->sim.getX(), this->sim.getVelocity(),
-                                        this->sim.getAngle(), this->sim.getAngularVelocity());
-    const float actionForce[3] = {-kMaxInputForce, 0.f, kMaxInputForce};
-    this->sim.setControlForce(actionForce[action]);
+    // The policy outputs a normalized force in [-1, 1] each frame; scale it to
+    // the cart's force command (it now chooses direction AND magnitude).
+    const float action = this->policy.act(this->sim.getX(), this->sim.getVelocity(),
+                                          this->sim.getAngle(), this->sim.getAngularVelocity());
+    this->sim.setControlForce(action * kMaxInputForce);
     this->sim.advance(dt);
 
     // Track how long the pole stays upright (the swing-up goal), and run a fixed

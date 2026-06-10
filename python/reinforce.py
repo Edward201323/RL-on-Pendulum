@@ -33,17 +33,25 @@ OBS_SCALE = torch.tensor([100.0, 100.0, 1.0, 1.0, 5.0])
 
 
 class Policy(nn.Module):
-    """Maps an observation to logits over the 3 discrete actions (L / coast / R)."""
+    """Gaussian policy for a continuous force.
+
+    The network outputs the MEAN action; a separate learned (state-independent)
+    log-std sets how much we explore around it. The agent acts by *sampling* from
+    Normal(mean, std) -- that sampling is the exploration.
+    """
 
     def __init__(self):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(5, HIDDEN), nn.Tanh(),
-            nn.Linear(HIDDEN, 3),
+            nn.Linear(HIDDEN, 1),
         )
+        # log of the stddev, shared across states; exp() keeps it positive.
+        # Starts at 0 -> std = 1 (broad exploration in normalized action units).
+        self.log_std = nn.Parameter(torch.zeros(1))
 
     def forward(self, obs):
-        return self.net(obs / OBS_SCALE)
+        return self.net(obs / OBS_SCALE)  # the mean action (unbounded; env clips)
 
 
 def discounted_returns(rewards):
@@ -67,10 +75,10 @@ def run_episode(env, policy):
     log_probs, rewards = [], []
     done = False
     while not done:
-        logits = policy(torch.from_numpy(obs))
-        dist = torch.distributions.Categorical(logits=logits)
-        action = dist.sample()                     # sample (don't argmax) to explore
-        log_probs.append(dist.log_prob(action))    # log pi(a|s): the gradient handle
+        mean = policy(torch.from_numpy(obs))
+        dist = torch.distributions.Normal(mean, policy.log_std.exp())
+        action = dist.sample()                       # sample a force (exploration)
+        log_probs.append(dist.log_prob(action).sum())  # log pi(a|s) for continuous a
         obs, reward, terminated, truncated, _ = env.step(action.item())
         rewards.append(reward)
         done = terminated or truncated
