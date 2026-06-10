@@ -6,7 +6,7 @@
 // now live in the headless CartPole core; App feeds this the pivot and angle.
 class Pendulum {
 public:
-    Pendulum(float length = 220.f, float rodThickness = 10.f, float bobRadius = 22.f);
+    Pendulum(float length = 130.f, float rodThickness = 6.f, float bobRadius = 14.f);
 
     void setPivot(sf::Vector2f pivot);
     void setAngle(float radians); // 0 = straight up, positive = clockwise tilt

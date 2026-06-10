@@ -13,10 +13,10 @@ struct CartPoleConfig {
     float gravity = 1500.f;            // px/s^2
     float cartMass = 1.0f;             // M
     float bobMass = 0.2f;              // m, point mass at the rod tip
-    float length = 220.f;              // L, rod length (px)
+    float length = 130.f;              // L, rod length (px)
     float poleDamping = 0.4f;          // viscous angular damping (per second)
     float cartFriction = 1.0f;         // viscous cart-track coefficient (force per velocity)
-    float trackLimit = 350.f;          // max |x| the cart center may reach (px)
+    float trackLimit = 370.f;          // max |x| the cart center may reach (px)
     float initialAngle = 3.14159265f;  // pose set by reset(): pi rad = hanging straight down
     float failAngle = 1.5708f;         // |theta| past which isDone() reports a fall (rad, ~90 deg)
     float maxDt = 0.1f;                // dt cap so a long frame can't blow up the integrator
