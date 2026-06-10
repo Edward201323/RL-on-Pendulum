@@ -22,12 +22,12 @@ extern char** environ;  // for posix_spawn (launching the Python trainer)
 
 namespace {
 constexpr float kPi = 3.14159265358979323846f;
-constexpr float kMaxInputForce = 8.f;      // Newtons; MUST match F_MAX in pendulum_env.py
+constexpr float kMaxInputForce = 12.f;     // Newtons; MUST match F_MAX in pendulum_env.py
 constexpr float kUprightCos = 0.95f;       // cos(theta) above this counts as "upright"
 
 // Physics runs in SI (meters); rendering is in pixels. This is the one scale
 // that converts between them for drawing.
-constexpr float kPixelsPerMeter = 350.f;
+constexpr float kPixelsPerMeter = 300.f;
 constexpr float kCartWidthMeters = 0.14f;      // small relative to the track
 constexpr float kCartHeightMeters = 0.07f;
 constexpr float kRodThicknessMeters = 0.02f;   // pole rod (visual)
@@ -35,6 +35,11 @@ constexpr float kBobRadiusMeters = 0.05f;      // pole bob (visual)
 
 // Control-force time graph: keep the last ~4 s at 60 FPS.
 constexpr std::size_t kGraphSamples = 240;
+
+// Parallel training episodes per update: default and max (max MUST match
+// MAX_AGENTS in reinforce.py). The arrow keys vary it between 1 and kMaxAgents.
+constexpr int kDefaultAgents = 8;
+constexpr int kMaxAgents = 16;
 }
 
 static sf::ContextSettings makeContextSettings() {
@@ -85,8 +90,9 @@ App::App(int argc, char** argv)
       shownAttempts(0),
       trainingMode(true),
       trainingPid(0),
-      trainingStopped(false),
-      trainDelay(0.f) {
+      trainingPaused(false),
+      agentCount(kDefaultAgents),
+      haveScoresMtime(false) {
     window.setFramerateLimit(60);
 
     // "--watch" skips training and just plays whatever policy.txt already exists.
@@ -109,8 +115,10 @@ App::App(int argc, char** argv)
 }
 
 App::~App() {
-    // Don't leave the trainer running after the window closes.
+    // Don't leave the trainer running after the window closes. If it's paused
+    // (SIGSTOP'd), continue it first so it can receive the terminate.
     if (this->trainingPid > 0) {
+        if (this->trainingPaused) kill(this->trainingPid, SIGCONT);
         kill(this->trainingPid, SIGTERM);
     }
 }
@@ -122,7 +130,11 @@ void App::launchTraining() {
     // an old "Training done" before the new run writes its first update.
     std::error_code ec;
     std::filesystem::remove(this->projectRoot + "/python/train_status.txt", ec);
-    this->writeTrainSpeed();  // start at full speed (trainDelay = 0)
+    std::filesystem::remove(this->projectRoot + "/python/train_history.txt", ec);
+    this->scoreXs.clear();
+    this->scoreYs.clear();
+    this->haveScoresMtime = false;
+    this->writeAgentCount();  // start with the default agent count
 
     // No update count -> reinforce.py trains indefinitely until we kill it (S key).
     const std::string cmd = "cd '" + this->projectRoot +
@@ -152,39 +164,27 @@ void App::snapshotPolicy() {
     this->shownAttempts = (in >> a >> r >> done) ? a : 0;
 }
 
-// Top-left box: the attempt count behind the policy currently on screen (captured
-// at the last Space press; 0 = untrained) and how long this run has been going.
+// Top-left box: consolidated status. Header (state + agent count), how many
+// training episodes have run ("trained"), which policy vintage is on screen
+// ("shown #N"), and the live demo-run time ("watch").
 std::string App::displayText() const {
-    char buf[64];
-    std::snprintf(buf, sizeof(buf), "Attempt %d\n%5.2f s", this->shownAttempts, this->episodeTime);
-    return std::string(buf);
-}
+    char buf[192];
+    if (!this->trainingMode) {  // --watch: no trainer
+        std::snprintf(buf, sizeof(buf), "Watching\nPolicy: #%d\nElapsed: %5.2fs",
+                      this->shownAttempts, this->episodeTime);
+        return std::string(buf);
+    }
 
-// Bottom-left box: live training progress -- how many attempts done so far and the
-// latest average return -- read from the trainer's status file.
-std::string App::trainingText() const {
-    std::ifstream in(this->projectRoot + "/python/train_status.txt");
-    int attempts = 0, done = 0;
+    int trained = 0, done = 0;
     float ret = 0.f;
-    const bool haveStatus = static_cast<bool>(in >> attempts >> ret >> done);
+    { std::ifstream in(this->projectRoot + "/python/train_status.txt");
+      in >> trained >> ret >> done; }
 
-    if (this->trainingStopped) {
-        char buf[80];
-        std::snprintf(buf, sizeof(buf), "Training stopped\nattempts %d\nreturn %.1f",
-                      attempts, ret);
-        return std::string(buf);
-    }
-
-    char speed[24];
-    if (this->trainDelay <= 0.f) std::snprintf(speed, sizeof(speed), "speed: full");
-    else std::snprintf(speed, sizeof(speed), "speed: -%.1fs/upd", this->trainDelay);
-    if (haveStatus) {
-        char buf[112];
-        std::snprintf(buf, sizeof(buf), "Training...\nattempts %d\nreturn %.1f\n%s",
-                      attempts, ret, speed);
-        return std::string(buf);
-    }
-    return std::string("Starting training...\n") + speed;
+    const char* state = this->trainingPaused ? "Paused" : "Training";
+    std::snprintf(buf, sizeof(buf),
+                  "%s  %d agents\nEpisodes: %d\nPolicy: #%d\nElapsed: %5.2fs",
+                  state, this->agentCount, trained, this->shownAttempts, this->episodeTime);
+    return std::string(buf);
 }
 
 // Main loop: handle input, step the physics by the real frame time, redraw.
@@ -212,35 +212,58 @@ void App::processEvents() {
             this->snapshotPolicy();
             this->resetEpisode();
         } else if (this->trainingMode && event.key.code == sf::Keyboard::Up) {
-            this->trainDelay -= 0.1f;  // faster (less sleep), capped at full speed
-            if (this->trainDelay < 0.f) this->trainDelay = 0.f;
-            this->writeTrainSpeed();
+            if (this->agentCount < kMaxAgents) ++this->agentCount;  // more agents
+            this->writeAgentCount();
         } else if (this->trainingMode && event.key.code == sf::Keyboard::Down) {
-            this->trainDelay += 0.1f;  // slower (more sleep per update)
-            if (this->trainDelay > 1.5f) this->trainDelay = 1.5f;
-            this->writeTrainSpeed();
-        } else if (event.key.code == sf::Keyboard::S) {
-            // Stop training for good (the window stays open for replay).
+            if (this->agentCount > 1) --this->agentCount;  // fewer agents (lighter training)
+            this->writeAgentCount();
+        } else if (event.key.code == sf::Keyboard::P) {
+            // Pause / resume training (freeze the child process; the window keeps
+            // running so you can still replay the last policy with Space).
             if (this->trainingPid > 0) {
-                kill(this->trainingPid, SIGTERM);
-                this->trainingPid = 0;
-                this->trainingStopped = true;
-                std::printf("Training stopped.\n");
+                this->trainingPaused = !this->trainingPaused;
+                kill(this->trainingPid, this->trainingPaused ? SIGSTOP : SIGCONT);
+                std::printf(this->trainingPaused ? "Training paused.\n"
+                                                 : "Training resumed.\n");
             }
         }
     }
 }
 
-// Write the per-update sleep (slow-mo) to a file the trainer polls each update.
-void App::writeTrainSpeed() const {
-    const std::string path = this->projectRoot + "/python/train_speed.txt";
+// Write the desired number of training agents to a file the trainer polls each
+// update (the arrow keys change it live).
+void App::writeAgentCount() const {
+    const std::string path = this->projectRoot + "/python/train_agents.txt";
     const std::string tmp = path + ".tmp";
     std::ofstream out(tmp);
     if (!out) return;
-    out << this->trainDelay << "\n";
+    out << this->agentCount << "\n";
     out.close();
     std::error_code ec;
     std::filesystem::rename(tmp, path, ec);  // atomic; no torn reads
+}
+
+// Reload the score-vs-attempts learning curve from the trainer's history file
+// when it changes on disk (appended every few updates).
+void App::maybeReloadScores() {
+    namespace fs = std::filesystem;
+    const std::string path = this->projectRoot + "/python/train_history.txt";
+    std::error_code ec;
+    const fs::file_time_type t = fs::last_write_time(path, ec);
+    if (ec) return;  // no history yet
+    if (this->haveScoresMtime && t == this->scoresMtime) return;
+    this->scoresMtime = t;
+    this->haveScoresMtime = true;
+
+    std::ifstream in(path);
+    std::vector<float> xs, ys;
+    float a = 0.f, s = 0.f;
+    while (in >> a >> s) {  // skips a torn final line cleanly
+        xs.push_back(a);
+        ys.push_back(s);
+    }
+    this->scoreXs.swap(xs);
+    this->scoreYs.swap(ys);
 }
 
 // Drop the cart back to center with the pole hanging at the bottom (theta = pi)
@@ -265,6 +288,8 @@ float App::getPendulumAngularVelocity() const { return this->sim.getAngularVeloc
 // Advance one frame: sync the track limits, let the policy act, step the
 // physics, then position the renderers from the new physics state.
 void App::update(float dt) {
+    this->maybeReloadScores();  // pick up new learning-curve points
+
     // The track length is a fixed physical property (config.trackLimit, in
     // meters) -- not derived from the window -- so the simulated walls are real.
     TrackLayout layout = computeTrackLayout(window);
@@ -310,12 +335,13 @@ void App::render() {
     cart.draw(window);
     pendulum.draw(window);
 
-    // Boxed control-force graph (bottom) and boxed status (top-left).
+    // Bottom-left: score-vs-attempts learning curve. Bottom-right: control force.
+    if (this->trainingMode) {
+        this->hud.drawScoreGraph(window, this->scoreXs, this->scoreYs, "Score");
+    }
     this->hud.drawGraph(window, this->forceHistory, kGraphSamples, kMaxInputForce,
                         "Control force (N)");
-    this->hud.drawTextBox(window, this->displayText(), /*bottom=*/false);  // top-left
-    if (this->trainingMode) {
-        this->hud.drawTextBox(window, this->trainingText(), /*bottom=*/true);  // bottom-left
-    }
+    // Consolidated status box, top-left.
+    this->hud.drawTextBox(window, this->displayText(), /*bottom=*/false);
     window.display();
 }

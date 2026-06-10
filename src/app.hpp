@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <random>
 #include <string>
+#include <vector>
 
 #include <SFML/Graphics.hpp>
 
@@ -42,9 +43,9 @@ private:
 
     void launchTraining();      // spawn the Python trainer as a child process
     void snapshotPolicy();      // load the latest policy + capture its attempt count
-    void writeTrainSpeed() const;      // tell the trainer the current slow-mo delay
-    std::string displayText() const;   // top-left: shown policy's attempt count + time
-    std::string trainingText() const;  // bottom-left: live training progress
+    void writeAgentCount() const;      // tell the trainer how many agents to use
+    void maybeReloadScores();   // reload the score-vs-attempts history when it changes
+    std::string displayText() const;   // top-left consolidated status
 
     sf::RenderWindow window;
     sf::Clock clock;
@@ -63,7 +64,12 @@ private:
     std::string projectRoot;  // repo root (holds python/), found at startup
     std::string policyPath;   // projectRoot + "/python/policy.txt"
     bool trainingMode;        // true = launch training and show its progress
-    pid_t trainingPid;        // child trainer pid (0 = none), killed on exit/Stop
-    bool trainingStopped;     // true once the user pressed S to stop training
-    float trainDelay;         // seconds the trainer sleeps per update (0 = full speed)
+    pid_t trainingPid;        // child trainer pid (0 = none), killed on exit
+    bool trainingPaused;      // true while training is paused (SIGSTOP) via P
+    int agentCount;           // parallel training episodes per update (arrow keys)
+
+    std::vector<float> scoreXs;  // learning curve: attempts ...
+    std::vector<float> scoreYs;  // ... and the matching scores
+    std::filesystem::file_time_type scoresMtime;  // last-seen history file write time
+    bool haveScoresMtime;
 };

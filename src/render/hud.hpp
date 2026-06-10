@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <deque>
 #include <string>
+#include <vector>
 
 #include <SFML/Graphics.hpp>
 
@@ -29,10 +30,15 @@ public:
     // bottom=false anchors it top-left; bottom=true anchors it bottom-left.
     void drawTextBox(sf::RenderWindow& window, const std::string& text, bool bottom) const;
 
-    // Scrolling time graph (bottom): the last `capacity` samples, newest at the
-    // right, on a fixed +-yRange vertical scale. Used for the control-force trace.
+    // Scrolling time graph (bottom-right): the last `capacity` samples, newest at
+    // the right, on a fixed +-yRange vertical scale. Used for the control-force trace.
     void drawGraph(sf::RenderWindow& window, const std::deque<float>& samples,
                    std::size_t capacity, float yRange, const char* label) const;
+
+    // Learning-curve graph (bottom-left): score (ys) vs. attempts (xs), the full
+    // history from 0 to current, with both axes auto-scaled to fit the data.
+    void drawScoreGraph(sf::RenderWindow& window, const std::vector<float>& xs,
+                        const std::vector<float>& ys, const char* label) const;
 
 private:
     sf::Font font;

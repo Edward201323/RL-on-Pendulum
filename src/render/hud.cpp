@@ -54,7 +54,8 @@ Hud::Hud() : hasFont(false) {
 
 void Hud::drawPlayfield(sf::RenderWindow& window) const {
     const sf::Vector2u ws = window.getSize();
-    const float x = 40.f, y = 110.f;  // starts below the top-left info box (no overlap)
+    const float x = 40.f;
+    const float y = static_cast<float>(ws.y) * 0.23f;  // below the top-left status box
     const float w = static_cast<float>(ws.x) - 2.f * x;
     const float h = static_cast<float>(ws.y) * kPlayBottomFrac - y;
     sf::ConvexShape box = roundedRect(w, h, 20.f);
@@ -127,6 +128,69 @@ void Hud::drawTextBox(sf::RenderWindow& window, const std::string& str, bool bot
 
     text.setPosition(std::round(bx + 14.f), std::round(by + 12.f));
     window.draw(text);
+}
+
+void Hud::drawScoreGraph(sf::RenderWindow& window, const std::vector<float>& xs,
+                         const std::vector<float>& ys, const char* label) const {
+    const sf::Vector2u ws = window.getSize();
+    const float gW = 540.f;                              // bottom-LEFT, mirrors force graph
+    const float x0 = 40.f, x1 = x0 + gW;
+    const float y0 = static_cast<float>(ws.y) * kPlayBottomFrac + 16.f;
+    const float y1 = static_cast<float>(ws.y) - 28.f;
+    const sf::Color border(120, 200, 150), trace(130, 225, 150), grid(150, 150, 150);
+
+    sf::ConvexShape panel = roundedRect(x1 - x0, y1 - y0, 10.f);
+    panel.setPosition(x0, y0);
+    panel.setFillColor(sf::Color(25, 25, 25, 190));
+    panel.setOutlineThickness(2.f);
+    panel.setOutlineColor(border);
+    window.draw(panel);
+
+    auto drawLabel = [&](const char* s, unsigned size, sf::Color c, float ax, float ay,
+                         int align) {  // align: 0 left, 1 right
+        if (!this->hasFont) return;
+        sf::Text t(s, this->font, size);
+        t.setFillColor(c);
+        const sf::FloatRect b = t.getLocalBounds();
+        const float ox = (align == 1) ? (b.left + b.width) : 0.f;
+        t.setOrigin(std::round(ox), 0.f);
+        t.setPosition(std::round(ax), std::round(ay));
+        window.draw(t);
+    };
+
+    if (xs.size() < 2) {
+        drawLabel(this->hasFont ? "Score  (collecting...)" : "", 16, trace, x0 + 12.f, y0 + 8.f, 0);
+        return;
+    }
+
+    // Plot area inset for labels (title top, x labels bottom, y labels right).
+    const float px0 = x0 + 14.f, px1 = x1 - 40.f;
+    const float py0 = y0 + 28.f, py1 = y1 - 22.f;
+
+    const float xmax = xs.back() > 0.f ? xs.back() : 1.f;  // attempts: 0 .. current
+    const float ymin = 0.f, ymax = 100.f;  // score is a fixed 0..100 "% upright"
+
+    sf::VertexArray curve(sf::LineStrip, xs.size());
+    for (std::size_t i = 0; i < xs.size(); ++i) {
+        const float fx = px0 + (xs[i] / xmax) * (px1 - px0);
+        const float fy = py1 - ((ys[i] - ymin) / (ymax - ymin)) * (py1 - py0);
+        curve[i].position = sf::Vector2f(fx, fy);
+        curve[i].color = trace;
+    }
+    window.draw(curve);
+
+    float best = ys[0];
+    for (float v : ys) { if (v > best) best = v; }
+    char buf[48];
+    std::snprintf(buf, sizeof(buf), "Best  %.0f", best);
+    drawLabel(buf, 16, sf::Color(220, 220, 220), x0 + 12.f, y0 + 6.f, 0);
+    std::snprintf(buf, sizeof(buf), "%.0f", ymax);
+    drawLabel(buf, 12, grid, x1 - 6.f, py0 - 6.f, 1);
+    std::snprintf(buf, sizeof(buf), "%.0f", ymin);
+    drawLabel(buf, 12, grid, x1 - 6.f, py1 - 12.f, 1);
+    std::snprintf(buf, sizeof(buf), "%.0f attempts", xmax);
+    drawLabel(buf, 12, grid, x1 - 6.f, y1 - 18.f, 1);
+    drawLabel("0", 12, grid, px0, y1 - 18.f, 0);
 }
 
 void Hud::drawGraph(sf::RenderWindow& window, const std::deque<float>& samples,

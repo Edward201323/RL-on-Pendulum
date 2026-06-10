@@ -29,11 +29,11 @@ if os.path.isdir(_build) and _build not in sys.path:
 
 import cartpole_cpp  # noqa: E402  (must follow the sys.path tweak above)
 
-# Max push force in NEWTONS (the [-1,1] action is scaled by this). ~0.8x the
-# cart's weight (M*g = 1.0*9.81 = 9.81 N) -> max accel ~0.82 g. Enough authority
-# that balancing beats whirling, while still requiring real energy-pumping.
+# Max push force in NEWTONS (the [-1,1] action is scaled by this). ~1.2x the
+# cart's weight (M*g = 1.0*9.81 = 9.81 N) -> max accel ~1.2 g. More authority to
+# swing up and to catch/hold the balance at the top.
 # MUST match kMaxInputForce in src/app.cpp (training vs. playback force scale).
-F_MAX = 8.0
+F_MAX = 12.0
 DT = 1.0 / 60.0         # physics step (s), matched to the 60 FPS SFML demo
 SPIN_LIMIT = 12.0       # rad/s; above this, angular velocity is "too high" and punished
                         # (swing-up only needs ~9 rad/s, so this leaves it room)
