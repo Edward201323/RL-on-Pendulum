@@ -145,7 +145,9 @@ def collect_batch(envs, policy):
 
 
 def main():
-    updates = int(sys.argv[1]) if len(sys.argv) > 1 else 400
+    # Optional CLI cap (for standalone runs); None = train indefinitely (the app
+    # launches it this way and stops it by killing the process).
+    updates = int(sys.argv[1]) if len(sys.argv) > 1 else None
     torch.set_num_threads(1)  # the net is tiny; threading overhead only slows it down
     envs = [PendulumSwingUpEnv() for _ in range(BATCH)]  # stepped in lockstep
     policy = Policy()
@@ -156,7 +158,9 @@ def main():
     write_status(0, 0.0, done=False)
 
     avg = 0.0
-    for update in range(updates):
+    update = 0
+    attempt = 0
+    while updates is None or update < updates:
         obs_flat, act_flat, ret_flat, episode_returns = collect_batch(envs, policy)
 
         # One batched forward/backward over every collected step (the speed win).
@@ -181,15 +185,18 @@ def main():
         loss.backward()
         optimizer.step()
 
-        avg = float(np.mean(episode_returns))
-        if (update + 1) % 10 == 0:
-            # Episodes are fixed-length now, so total reward (not length) is the
-            # signal: it climbs as the agent learns to swing up and stay up.
-            print(f"update {update + 1:4d}   avg return: {avg:8.1f}")
+        # Print every individual attempt's total reward (return).
+        for r in episode_returns:
+            attempt += 1
+            print(f"attempt {attempt:6d}   return {float(r):8.1f}")
+        avg = float(np.mean(episode_returns))  # still used for the on-screen status
 
         # Re-export periodically so the SFML app can hot-reload and show progress.
+        # Also checkpoint policy.pt here -- with the infinite loop the post-loop
+        # save never runs, and the trainer is stopped by being killed.
         if (update + 1) % EXPORT_EVERY == 0:
             write_policy_txt(policy)
+            torch.save(policy.state_dict(), "python/policy.pt")
             write_status((update + 1) * BATCH, avg, done=False)
 
         # Optional slow-mo: the app writes a per-update delay via the arrow keys.
@@ -197,6 +204,9 @@ def main():
         if delay > 0.0:
             time.sleep(delay)
 
+        update += 1
+
+    # Reached only for a finite CLI cap; the app trains indefinitely.
     write_policy_txt(policy)
     torch.save(policy.state_dict(), "python/policy.pt")
     write_status(updates * BATCH, avg, done=True)

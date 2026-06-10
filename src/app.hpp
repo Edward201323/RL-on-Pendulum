@@ -63,7 +63,7 @@ private:
     std::string projectRoot;  // repo root (holds python/), found at startup
     std::string policyPath;   // projectRoot + "/python/policy.txt"
     bool trainingMode;        // true = launch training and show its progress
-    int trainingUpdates;      // how many updates to train for
-    pid_t trainingPid;        // child trainer pid (0 = none), killed on exit
+    pid_t trainingPid;        // child trainer pid (0 = none), killed on exit/Stop
+    bool trainingStopped;     // true once the user pressed S to stop training
     float trainDelay;         // seconds the trainer sleeps per update (0 = full speed)
 };

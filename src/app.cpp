@@ -22,7 +22,7 @@ extern char** environ;  // for posix_spawn (launching the Python trainer)
 
 namespace {
 constexpr float kPi = 3.14159265358979323846f;
-constexpr float kMaxInputForce = 5.f;      // Newtons; MUST match F_MAX in pendulum_env.py
+constexpr float kMaxInputForce = 8.f;      // Newtons; MUST match F_MAX in pendulum_env.py
 constexpr float kUprightCos = 0.95f;       // cos(theta) above this counts as "upright"
 
 // Physics runs in SI (meters); rendering is in pixels. This is the one scale
@@ -84,20 +84,14 @@ App::App(int argc, char** argv)
       bestUprightStreak(0.f),
       shownAttempts(0),
       trainingMode(true),
-      trainingUpdates(600),
       trainingPid(0),
+      trainingStopped(false),
       trainDelay(0.f) {
     window.setFramerateLimit(60);
 
-    // Args: a number sets the training-update count; "--watch" skips training and
-    // just plays whatever policy.txt already exists.
+    // "--watch" skips training and just plays whatever policy.txt already exists.
     for (int i = 1; i < argc; ++i) {
-        const std::string a = argv[i];
-        if (a == "--watch") {
-            this->trainingMode = false;
-        } else {
-            try { this->trainingUpdates = std::stoi(a); } catch (...) {}
-        }
+        if (std::string(argv[i]) == "--watch") this->trainingMode = false;
     }
 
     this->projectRoot = findProjectRoot();
@@ -130,16 +124,15 @@ void App::launchTraining() {
     std::filesystem::remove(this->projectRoot + "/python/train_status.txt", ec);
     this->writeTrainSpeed();  // start at full speed (trainDelay = 0)
 
+    // No update count -> reinforce.py trains indefinitely until we kill it (S key).
     const std::string cmd = "cd '" + this->projectRoot +
-                            "' && exec python3.12 python/reinforce.py " +
-                            std::to_string(this->trainingUpdates);
+                            "' && exec python3.12 python/reinforce.py";
     const char* argv[] = {"/bin/sh", "-c", cmd.c_str(), nullptr};
     pid_t pid = 0;
     if (posix_spawn(&pid, "/bin/sh", nullptr, nullptr,
                     const_cast<char* const*>(argv), environ) == 0) {
         this->trainingPid = pid;
-        std::printf("Training started (reinforce.py %d updates) -- watch it learn live.\n",
-                    this->trainingUpdates);
+        std::printf("Training started -- runs until you press S. Watch it learn live.\n");
     } else {
         std::printf("Could not start the training process.\n");
     }
@@ -173,13 +166,22 @@ std::string App::trainingText() const {
     std::ifstream in(this->projectRoot + "/python/train_status.txt");
     int attempts = 0, done = 0;
     float ret = 0.f;
+    const bool haveStatus = static_cast<bool>(in >> attempts >> ret >> done);
+
+    if (this->trainingStopped) {
+        char buf[80];
+        std::snprintf(buf, sizeof(buf), "Training stopped\nattempts %d\nreturn %.1f",
+                      attempts, ret);
+        return std::string(buf);
+    }
+
     char speed[24];
     if (this->trainDelay <= 0.f) std::snprintf(speed, sizeof(speed), "speed: full");
     else std::snprintf(speed, sizeof(speed), "speed: -%.1fs/upd", this->trainDelay);
-    if (in >> attempts >> ret >> done) {
+    if (haveStatus) {
         char buf[112];
-        std::snprintf(buf, sizeof(buf), "%s\nattempts %d\nreturn %.1f\n%s",
-                      done ? "Training done" : "Training...", attempts, ret, speed);
+        std::snprintf(buf, sizeof(buf), "Training...\nattempts %d\nreturn %.1f\n%s",
+                      attempts, ret, speed);
         return std::string(buf);
     }
     return std::string("Starting training...\n") + speed;
@@ -217,6 +219,14 @@ void App::processEvents() {
             this->trainDelay += 0.1f;  // slower (more sleep per update)
             if (this->trainDelay > 1.5f) this->trainDelay = 1.5f;
             this->writeTrainSpeed();
+        } else if (event.key.code == sf::Keyboard::S) {
+            // Stop training for good (the window stays open for replay).
+            if (this->trainingPid > 0) {
+                kill(this->trainingPid, SIGTERM);
+                this->trainingPid = 0;
+                this->trainingStopped = true;
+                std::printf("Training stopped.\n");
+            }
         }
     }
 }
@@ -239,6 +249,7 @@ void App::writeTrainSpeed() const {
 void App::resetEpisode() {
     this->episodeTime = 0.f;
     this->uprightStreak = 0.f;
+    this->forceHistory.clear();  // start the force graph fresh each attempt
     std::uniform_real_distribution<float> dist(-0.05f, 0.05f);
     this->sim.setState(0.f, 0.f, kPi + dist(this->rng), 0.f);
 }

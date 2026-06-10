@@ -30,11 +30,13 @@ if os.path.isdir(_build) and _build not in sys.path:
 import cartpole_cpp  # noqa: E402  (must follow the sys.path tweak above)
 
 # Max push force in NEWTONS (the [-1,1] action is scaled by this). ~0.8x the
-# cart's weight (M*g = 1.0*9.81 = 9.81 N) -> max accel ~0.82 g. A modest, realistic
-# servo: it can't muscle the pole up, so swing-up needs real energy-pumping.
+# cart's weight (M*g = 1.0*9.81 = 9.81 N) -> max accel ~0.82 g. Enough authority
+# that balancing beats whirling, while still requiring real energy-pumping.
 # MUST match kMaxInputForce in src/app.cpp (training vs. playback force scale).
-F_MAX = 5.0
+F_MAX = 8.0
 DT = 1.0 / 60.0         # physics step (s), matched to the 60 FPS SFML demo
+SPIN_LIMIT = 12.0       # rad/s; above this, angular velocity is "too high" and punished
+                        # (swing-up only needs ~9 rad/s, so this leaves it room)
 
 # Continuous action: a single value in [-1, 1] scaled to a horizontal force on
 # the cart (-1 = full push left, +1 = full push right, 0 = coast). The policy
@@ -66,11 +68,16 @@ class PendulumSwingUpEnv(gym.Env):
 
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)  # seeds self.np_random
-        # Start hanging at the bottom (theta = pi) with a little noise.
-        theta = math.pi + float(self.np_random.uniform(-self.init_angle_noise,
-                                                        self.init_angle_noise))
+        # Start-state curriculum: begin each TRAINING episode at a random angle
+        # (anywhere from upright to hanging), not always the bottom. This is the
+        # fix for the "it only spins" trap -- starting sometimes near-upright lets
+        # the agent actually experience and learn the balanced state (which it
+        # would never stumble into exploring only from the bottom). The on-screen
+        # demo still starts at the bottom to show a full swing-up.
+        theta = float(self.np_random.uniform(-math.pi, math.pi))
         self.sim.set_state(0.0, 0.0, theta, 0.0)
         self.steps = 0
+        self.prev_force = 0.0  # for the control-smoothness penalty
         return self._obs(), {}
 
     def step(self, action):
@@ -89,20 +96,26 @@ class PendulumSwingUpEnv(gym.Env):
 
         # Swing-up reward. cos(theta) is +1 at the top, -1 hanging down, so the
         # agent is continuously rewarded for getting (and staying) upright --
-        # wrap-safe, unlike theta**2. The small extra terms keep it centered,
-        # discourage endless spinning, and put a tiny price on control.
+        # wrap-safe, unlike theta**2.
         upright = math.cos(theta)
         reward = upright
-        reward -= 0.1 * (self.sim.x / limit) ** 2
-        reward -= 0.001 * theta_dot ** 2
-        reward -= 0.001 * (force / F_MAX) ** 2
+        reward -= 0.1 * (self.sim.x / limit) ** 2          # stay near center
+        reward -= 0.005 * theta_dot ** 2                   # mild: discourage spinning
+        # Steep penalty once the pole is spinning faster than swing-up needs --
+        # kills the "vibrate fast near the top to game cos(theta)" exploit.
+        if abs(theta_dot) > SPIN_LIMIT:
+            reward -= 0.1 * (abs(theta_dot) - SPIN_LIMIT) ** 2
+        reward -= 0.001 * (force / F_MAX) ** 2             # small control-effort price
+        # Control-smoothness: punish rapid force reversals (the bang-bang chatter
+        # that pumps the pole into a runaway spin).
+        reward -= 0.02 * ((force - self.prev_force) / F_MAX) ** 2
+        self.prev_force = force
         # Bonus for being upright AND slow: rewards actually catching/balancing
         # at the top rather than just whirling through it.
         if upright > 0.95:
             reward += max(0.0, 1.0 - abs(theta_dot) / 2.0)
         if self.sim.boundary_contact() != 0:
             reward -= 5.0  # strong penalty: hitting a track edge is undesired
-            # (5x the max per-step upright reward, so any wall contact clearly hurts)
 
         # No failure state -- the pole may legitimately be at any angle. The
         # episode simply runs for a fixed horizon (truncation).
