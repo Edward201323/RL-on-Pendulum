@@ -30,8 +30,7 @@ EXPORT_EVERY = 5    # re-export policy.txt this often (updates) so the app can w
 GAMMA = 0.99        # discount: how much a future reward counts vs. an immediate one
 LR = 3e-3           # lower than 1e-2 for long-run stability (REINFORCE diverges easily)
 HIDDEN = 64
-BATCH = 8           # default agents (parallel episodes) per update; the app varies it
-MAX_AGENTS = 16     # upper bound for the live agent count (must match app.cpp kMaxAgents)
+BATCH = 8           # episodes rolled out and averaged into each gradient update (fixed)
 GRAD_CLIP = 1.0     # cap the gradient norm so one bad batch can't blow up the weights
 LOG_STD_MIN = -2.0  # clamp the policy std to [~0.14, ~1.6] so exploration can't collapse
 LOG_STD_MAX = 0.5   # (collapse -> stuck deterministic) or explode
@@ -118,16 +117,6 @@ def write_status(attempts, avg_return, done, path="python/train_status.txt"):
     os.replace(tmp, path)
 
 
-def read_agent_count(path="python/train_agents.txt", default=BATCH):
-    """Number of agents (parallel episodes) per update; the app sets this live via
-    the arrow keys. Clamped to [1, MAX_AGENTS]."""
-    try:
-        with open(path) as f:
-            return max(1, min(MAX_AGENTS, int(float(f.read().split()[0]))))
-    except Exception:
-        return default
-
-
 def collect_batch(envs, policy):
     """Roll out all BATCH episodes in lockstep (no gradients -- fast).
 
@@ -185,7 +174,7 @@ def main():
     # launches it this way and stops it by killing the process).
     updates = int(sys.argv[1]) if len(sys.argv) > 1 else None
     torch.set_num_threads(1)  # the net is tiny; threading overhead only slows it down
-    envs = [PendulumSwingUpEnv() for _ in range(MAX_AGENTS)]  # use the first N each update
+    envs = [PendulumSwingUpEnv() for _ in range(BATCH)]  # fixed batch of episodes per update
     policy = Policy()
     # weight_decay keeps the network weights from growing unbounded (which is what
     # saturates the output into the +-max-force bang-bang chatter).
@@ -200,8 +189,7 @@ def main():
     update = 0
     attempt = 0
     while updates is None or update < updates:
-        n = read_agent_count()  # live agent count (arrow keys); use the first n envs
-        obs_flat, act_flat, ret_flat, episode_returns, episode_scores = collect_batch(envs[:n], policy)
+        obs_flat, act_flat, ret_flat, episode_returns, episode_scores = collect_batch(envs, policy)
 
         # One batched forward/backward over every collected step (the speed win).
         obs_t = torch.from_numpy(obs_flat)                  # [N, 5]
@@ -218,8 +206,8 @@ def main():
 
         # Policy-gradient loss: maximize sum_t log pi(a_t|s_t) * G_t, so minimize
         # its negative. Above-average returns push their action's log-prob up;
-        # below-average ones push it down. Divide by the agent count for a stable step.
-        loss = -(log_probs * returns).sum() / n
+        # below-average ones push it down. Divide by the batch size for a stable step.
+        loss = -(log_probs * returns).sum() / BATCH
 
         optimizer.zero_grad()
         loss.backward()

@@ -79,7 +79,7 @@ class PendulumSwingUpEnv(gym.Env):
 
     metadata = {"render_modes": []}
 
-    def __init__(self, init_angle_noise: float = 0.05, max_steps: int = 500):
+    def __init__(self, init_angle_noise: float = 0.05, max_steps: int = 600):
         super().__init__()
         self.sim = cartpole_cpp.CartPole()
         self.init_angle_noise = float(init_angle_noise)

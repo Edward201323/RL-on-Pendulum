@@ -43,9 +43,13 @@ private:
 
     void launchTraining();      // spawn the Python trainer as a child process
     void snapshotPolicy();      // load the latest policy + capture its attempt count
-    void writeAgentCount() const;      // tell the trainer how many agents to use
     void maybeReloadScores();   // reload the score-vs-attempts history when it changes
-    std::string displayText() const;   // top-left consolidated status
+    std::string displayText() const;   // single status box (--watch mode)
+    std::string orangeText() const;    // orange box: this displayed run (policy/time/score)
+    std::string greenText() const;     // green box: overall training (state/episodes/avg)
+    float displayedScore() const;      // two-component score of the on-screen run so far
+    float avgRecentScore() const;      // mean of the last 10 logged training scores
+    float maxScore() const;            // best logged training score so far
 
     sf::RenderWindow window;
     sf::Clock clock;
@@ -58,6 +62,11 @@ private:
     float episodeTime;        // seconds since the current episode started
     float uprightStreak;      // seconds the pole has been continuously upright
     float bestUprightStreak;  // longest upright streak this session
+    // Live two-component score of the on-screen run, accumulated each frame and
+    // reset on Space (mirrors the trainer's score; see displayedScore()).
+    float liveUprightSum;     // sum of max(0, cos theta) over the displayed run
+    float liveCenteredSum;    // same, weighted by centeredness (1 - |x|/limit)
+    int liveScoreFrames;      // frames accumulated since the last reset
     int shownAttempts;        // training-attempt count behind the on-screen policy
     std::deque<float> forceHistory;  // recent control forces for the time graph
 
@@ -66,7 +75,6 @@ private:
     bool trainingMode;        // true = launch training and show its progress
     pid_t trainingPid;        // child trainer pid (0 = none), killed on exit
     bool trainingPaused;      // true while training is paused (SIGSTOP) via P
-    int agentCount;           // parallel training episodes per update (arrow keys)
 
     std::vector<float> scoreXs;  // learning curve: attempts ...
     std::vector<float> scoreYs;  // ... and the matching scores

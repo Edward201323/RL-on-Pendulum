@@ -1,5 +1,6 @@
 #include "app.hpp"
 
+#include <algorithm>
 #include <csignal>
 #include <cmath>
 #include <cstddef>
@@ -24,6 +25,13 @@ namespace {
 constexpr float kPi = 3.14159265358979323846f;
 constexpr float kMaxInputForce = 12.f;     // Newtons; MUST match F_MAX in pendulum_env.py
 constexpr float kUprightCos = 0.95f;       // cos(theta) above this counts as "upright"
+constexpr float kDemoEpisodeSeconds = 10.f;  // auto-restart the demo this often (matches
+                                             // the trainer's 600-step / 10 s episode)
+// Two-component live score, mirroring SCORE_W_* in reinforce.py: balance (time
+// upright) is primary, centering (sitting at x=0 while upright) the secondary
+// tie-breaker. Must sum to 1 so a perfect on-screen run reads 100.
+constexpr float kScoreWBalance = 0.8f;
+constexpr float kScoreWCenter = 0.2f;
 
 // Physics runs in SI (meters); rendering is in pixels. This is the one scale
 // that converts between them for drawing.
@@ -35,11 +43,6 @@ constexpr float kBobRadiusMeters = 0.05f;      // pole bob (visual)
 
 // Control-force time graph: keep the last ~4 s at 60 FPS.
 constexpr std::size_t kGraphSamples = 240;
-
-// Parallel training episodes per update: default and max (max MUST match
-// MAX_AGENTS in reinforce.py). The arrow keys vary it between 1 and kMaxAgents.
-constexpr int kDefaultAgents = 8;
-constexpr int kMaxAgents = 16;
 }
 
 static sf::ContextSettings makeContextSettings() {
@@ -87,11 +90,13 @@ App::App(int argc, char** argv)
       episodeTime(0.f),
       uprightStreak(0.f),
       bestUprightStreak(0.f),
+      liveUprightSum(0.f),
+      liveCenteredSum(0.f),
+      liveScoreFrames(0),
       shownAttempts(0),
       trainingMode(true),
       trainingPid(0),
       trainingPaused(false),
-      agentCount(kDefaultAgents),
       haveScoresMtime(false) {
     window.setFramerateLimit(60);
 
@@ -134,7 +139,6 @@ void App::launchTraining() {
     this->scoreXs.clear();
     this->scoreYs.clear();
     this->haveScoresMtime = false;
-    this->writeAgentCount();  // start with the default agent count
 
     // No update count -> reinforce.py trains indefinitely until we kill it (S key).
     const std::string cmd = "cd '" + this->projectRoot +
@@ -164,26 +168,61 @@ void App::snapshotPolicy() {
     this->shownAttempts = (in >> a >> r >> done) ? a : 0;
 }
 
-// Top-left box: consolidated status. Header (state + agent count), how many
-// training episodes have run ("trained"), which policy vintage is on screen
-// ("shown #N"), and the live demo-run time ("watch").
+// Two-component score (0..100) of the run currently on screen: balance (fraction
+// of frames upright) scaled by a centering tie-breaker. Mirrors reinforce.py so
+// the on-screen number is comparable to the trainer's learning curve.
+float App::displayedScore() const {
+    if (this->liveScoreFrames <= 0) return 0.f;
+    const float balance = this->liveUprightSum / this->liveScoreFrames;
+    const float centering = this->liveCenteredSum / std::max(this->liveUprightSum, 1e-6f);
+    return 100.f * balance * (kScoreWBalance + kScoreWCenter * centering);
+}
+
+// Mean of the last (up to) 10 logged training scores -- a steadier "where is it
+// now" number than the all-time best, which a single lucky run can inflate.
+float App::avgRecentScore() const {
+    if (this->scoreYs.empty()) return 0.f;
+    const std::size_t n = std::min<std::size_t>(10, this->scoreYs.size());
+    float sum = 0.f;
+    for (std::size_t i = this->scoreYs.size() - n; i < this->scoreYs.size(); ++i)
+        sum += this->scoreYs[i];
+    return sum / static_cast<float>(n);
+}
+
+// Best logged training score so far (the all-time peak of the learning curve).
+float App::maxScore() const {
+    if (this->scoreYs.empty()) return 0.f;
+    return *std::max_element(this->scoreYs.begin(), this->scoreYs.end());
+}
+
+// --watch single box (no trainer running): which policy is shown and its run time.
 std::string App::displayText() const {
     char buf[192];
-    if (!this->trainingMode) {  // --watch: no trainer
-        std::snprintf(buf, sizeof(buf), "Watching\nPolicy: #%d\nElapsed: %5.2fs",
-                      this->shownAttempts, this->episodeTime);
-        return std::string(buf);
-    }
+    std::snprintf(buf, sizeof(buf), "Watching\nPolicy: #%d\nElapsed: %5.2fs\nScore: %5.1f",
+                  this->shownAttempts, this->episodeTime, this->displayedScore());
+    return std::string(buf);
+}
 
+// Orange box: everything about the run currently on screen.
+std::string App::orangeText() const {
+    char buf[128];
+    std::snprintf(buf, sizeof(buf), "Policy: #%d\nElapsed: %5.2fs\nScore: %5.1f",
+                  this->shownAttempts, this->episodeTime, this->displayedScore());
+    return std::string(buf);
+}
+
+// Green box: overall training progress (state + agent count, episodes, best score).
+std::string App::greenText() const {
     int trained = 0, done = 0;
     float ret = 0.f;
     { std::ifstream in(this->projectRoot + "/python/train_status.txt");
       in >> trained >> ret >> done; }
 
     const char* state = this->trainingPaused ? "Paused" : "Training";
+    char buf[160];
     std::snprintf(buf, sizeof(buf),
-                  "%s  %d agents\nEpisodes: %d\nPolicy: #%d\nElapsed: %5.2fs",
-                  state, this->agentCount, trained, this->shownAttempts, this->episodeTime);
+                  "%s\nEpisodes: %d\nMax score: %5.1f",
+                  state, trained, this->maxScore());
     return std::string(buf);
 }
 
@@ -206,20 +245,9 @@ void App::processEvents() {
 
         if (event.type != sf::Event::KeyPressed) continue;
 
-        // Space samples the current policy: load the latest weights, label them
-        // with the training-attempt count, and restart from the bottom.
+        // Space pauses / resumes training (freeze the child process; the window
+        // keeps running so the current policy stays on screen past its window).
         if (event.key.code == sf::Keyboard::Space) {
-            this->snapshotPolicy();
-            this->resetEpisode();
-        } else if (this->trainingMode && event.key.code == sf::Keyboard::Up) {
-            if (this->agentCount < kMaxAgents) ++this->agentCount;  // more agents
-            this->writeAgentCount();
-        } else if (this->trainingMode && event.key.code == sf::Keyboard::Down) {
-            if (this->agentCount > 1) --this->agentCount;  // fewer agents (lighter training)
-            this->writeAgentCount();
-        } else if (event.key.code == sf::Keyboard::P) {
-            // Pause / resume training (freeze the child process; the window keeps
-            // running so you can still replay the last policy with Space).
             if (this->trainingPid > 0) {
                 this->trainingPaused = !this->trainingPaused;
                 kill(this->trainingPid, this->trainingPaused ? SIGSTOP : SIGCONT);
@@ -228,19 +256,6 @@ void App::processEvents() {
             }
         }
     }
-}
-
-// Write the desired number of training agents to a file the trainer polls each
-// update (the arrow keys change it live).
-void App::writeAgentCount() const {
-    const std::string path = this->projectRoot + "/python/train_agents.txt";
-    const std::string tmp = path + ".tmp";
-    std::ofstream out(tmp);
-    if (!out) return;
-    out << this->agentCount << "\n";
-    out.close();
-    std::error_code ec;
-    std::filesystem::rename(tmp, path, ec);  // atomic; no torn reads
 }
 
 // Reload the score-vs-attempts learning curve from the trainer's history file
@@ -272,6 +287,9 @@ void App::maybeReloadScores() {
 void App::resetEpisode() {
     this->episodeTime = 0.f;
     this->uprightStreak = 0.f;
+    this->liveUprightSum = 0.f;   // restart the on-screen score with the run
+    this->liveCenteredSum = 0.f;
+    this->liveScoreFrames = 0;
     this->forceHistory.clear();  // start the force graph fresh each attempt
     std::uniform_real_distribution<float> dist(-0.05f, 0.05f);
     this->sim.setState(0.f, 0.f, kPi + dist(this->rng), 0.f);
@@ -307,8 +325,23 @@ void App::update(float dt) {
         this->forceHistory.pop_front();
     }
 
-    // Run continuously; the attempt only restarts when the user presses Space.
+    // Accumulate the live two-component score for the displayed run: uprightness
+    // (max(0,cos theta)) and how centered it is while upright. Mirrors reinforce.py.
+    const float up = std::max(0.f, std::cos(this->sim.getAngle()));
+    const float frac = std::fabs(this->sim.getX()) / this->sim.config().trackLimit;
+    const float centerQ = std::max(0.f, std::min(1.f, 1.f - frac));
+    this->liveUprightSum += up;
+    this->liveCenteredSum += up * centerQ;
+    this->liveScoreFrames += 1;
+
     this->episodeTime += dt;
+    // Auto-cycle: every episode length, grab the newest policy and restart from the
+    // bottom -- no key press needed. While training is paused, keep showing the
+    // current policy and let it run past the window (no reset).
+    if (!this->trainingPaused && this->episodeTime >= kDemoEpisodeSeconds) {
+        this->snapshotPolicy();
+        this->resetEpisode();
+    }
 
     // Map the centered physics x (meters) onto the screen and position renderers.
     const float screenX = layout.center.x + this->sim.getX() * kPixelsPerMeter;
@@ -337,11 +370,22 @@ void App::render() {
 
     // Bottom-left: score-vs-attempts learning curve. Bottom-right: control force.
     if (this->trainingMode) {
-        this->hud.drawScoreGraph(window, this->scoreXs, this->scoreYs, "Score");
+        char title[32];
+        std::snprintf(title, sizeof(title), "Avg  %.1f", this->avgRecentScore());
+        this->hud.drawScoreGraph(window, this->scoreXs, this->scoreYs, title);
     }
     this->hud.drawGraph(window, this->forceHistory, kGraphSamples, kMaxInputForce,
                         "Control force (N)");
-    // Consolidated status box, top-left.
-    this->hud.drawTextBox(window, this->displayText(), /*bottom=*/false);
+    // Status panels, top-left. While training, split into two: an orange box for
+    // the displayed run and a green box (next to it) for overall training progress.
+    if (this->trainingMode) {
+        const float w = this->hud.drawTextBox(window, this->orangeText(), 40.f, 22.f,
+                                              sf::Color(225, 130, 95));   // coral
+        this->hud.drawTextBox(window, this->greenText(), 40.f + w + 16.f, 22.f,
+                              sf::Color(120, 200, 150));                  // green
+    } else {
+        this->hud.drawTextBox(window, this->displayText(), 40.f, 22.f,
+                              sf::Color(95, 190, 180));                   // teal
+    }
     window.display();
 }

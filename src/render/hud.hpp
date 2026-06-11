@@ -26,9 +26,11 @@ public:
     void drawAxis(sf::RenderWindow& window, const TrackLayout& layout,
                   float trackLimit, float pixelsPerMeter) const;
 
-    // Small boxed status panel showing the given (possibly multi-line) text.
-    // bottom=false anchors it top-left; bottom=true anchors it bottom-left.
-    void drawTextBox(sf::RenderWindow& window, const std::string& text, bool bottom) const;
+    // Small boxed status panel showing the given (possibly multi-line) text, with
+    // its top-left at (x, y) and the given outline color. Returns the box width so
+    // callers can place another panel flush beside it.
+    float drawTextBox(sf::RenderWindow& window, const std::string& text,
+                      float x, float y, sf::Color outline) const;
 
     // Scrolling time graph (bottom-right): the last `capacity` samples, newest at
     // the right, on a fixed +-yRange vertical scale. Used for the control-force trace.

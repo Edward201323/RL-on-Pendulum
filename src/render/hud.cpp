@@ -107,27 +107,26 @@ void Hud::drawAxis(sf::RenderWindow& window, const TrackLayout& layout,
     }
 }
 
-void Hud::drawTextBox(sf::RenderWindow& window, const std::string& str, bool bottom) const {
-    if (!this->hasFont) return;
-    const sf::Vector2u ws = window.getSize();
+float Hud::drawTextBox(sf::RenderWindow& window, const std::string& str,
+                       float x, float y, sf::Color outline) const {
+    if (!this->hasFont) return 0.f;
 
     sf::Text text(str, this->font, 20);
     text.setFillColor(sf::Color::White);
 
     const sf::FloatRect b = text.getLocalBounds();
     const float boxW = b.width + 30.f, boxH = b.height + 30.f;
-    const float bx = 40.f;
-    const float by = bottom ? (static_cast<float>(ws.y) - boxH - 28.f) : 22.f;
 
     sf::ConvexShape box = roundedRect(boxW, boxH, 10.f);
-    box.setPosition(bx, by);
+    box.setPosition(x, y);
     box.setFillColor(sf::Color(20, 20, 20, 215));
     box.setOutlineThickness(2.f);
-    box.setOutlineColor(sf::Color(95, 190, 180));  // teal, like the reference UI
+    box.setOutlineColor(outline);
     window.draw(box);
 
-    text.setPosition(std::round(bx + 14.f), std::round(by + 12.f));
+    text.setPosition(std::round(x + 14.f), std::round(y + 12.f));
     window.draw(text);
+    return boxW;
 }
 
 void Hud::drawScoreGraph(sf::RenderWindow& window, const std::vector<float>& xs,
@@ -179,11 +178,10 @@ void Hud::drawScoreGraph(sf::RenderWindow& window, const std::vector<float>& xs,
     }
     window.draw(curve);
 
-    float best = ys[0];
-    for (float v : ys) { if (v > best) best = v; }
+    // Title only -- the headline score number now lives in the green status box
+    // (as the recent average), so the graph just shows the trend.
     char buf[48];
-    std::snprintf(buf, sizeof(buf), "Best  %.0f", best);
-    drawLabel(buf, 16, sf::Color(220, 220, 220), x0 + 12.f, y0 + 6.f, 0);
+    drawLabel(label, 16, sf::Color(220, 220, 220), x0 + 12.f, y0 + 6.f, 0);
     std::snprintf(buf, sizeof(buf), "%.0f", ymax);
     drawLabel(buf, 12, grid, x1 - 6.f, py0 - 6.f, 1);
     std::snprintf(buf, sizeof(buf), "%.0f", ymin);
