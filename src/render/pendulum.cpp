@@ -23,16 +23,18 @@ void Pendulum::setAngle(float radians) {
 }
 
 // Draw the rod from the pivot at the current angle, with the bob at its tip.
-void Pendulum::draw(sf::RenderWindow& window) const {
+// alpha < 255 makes the whole pole translucent (the all-actors overlay ghosts).
+void Pendulum::draw(sf::RenderWindow& window, sf::Uint8 alpha) const {
     const float strokeWidth = 4.f;
-    const sf::Color accent(220, 80, 80);
+    const sf::Color white(255, 255, 255, alpha);
+    const sf::Color accent(220, 80, 80, alpha);
 
     // Rod: rectangle with origin at bottom-center so it extends upward at angle 0.
     sf::RectangleShape rod(sf::Vector2f(this->rodThickness, this->length));
     rod.setOrigin(this->rodThickness / 2.f, this->length);
     rod.setPosition(this->pivot);
     rod.setRotation(this->angle * 180.f / kPi);
-    rod.setFillColor(sf::Color::White);
+    rod.setFillColor(white);
     window.draw(rod);
 
     // Bob at the rod's free end: white border, colored fill.
@@ -42,7 +44,7 @@ void Pendulum::draw(sf::RenderWindow& window) const {
     sf::CircleShape bobOuter(this->bobRadius);
     bobOuter.setOrigin(this->bobRadius, this->bobRadius);
     bobOuter.setPosition(bobX, bobY);
-    bobOuter.setFillColor(sf::Color::White);
+    bobOuter.setFillColor(white);
     window.draw(bobOuter);
 
     float innerR = this->bobRadius - strokeWidth;

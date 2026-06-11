@@ -11,7 +11,8 @@ public:
     void setPosition(float x, float y);
     sf::Vector2f getPivot() const; // attachment point for the pendulum (top-center)
     float getWidth() const;
-    void draw(sf::RenderWindow &window) const;
+    // alpha < 255 draws a translucent cart (used for the all-actors overlay).
+    void draw(sf::RenderWindow &window, sf::Uint8 alpha = 255) const;
 
 private:
     float width;

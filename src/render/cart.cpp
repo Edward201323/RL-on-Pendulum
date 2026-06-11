@@ -20,10 +20,10 @@ sf::Vector2f Cart::getPivot() const {
 }
 
 // Draw the cart as a white box with a darker inset (a simple stroked rectangle).
-void Cart::draw(sf::RenderWindow& window) const {
+void Cart::draw(sf::RenderWindow& window, sf::Uint8 alpha) const {
     float strokeWidth = 4.f;
-    sf::Color outerColor = sf::Color::White;
-    sf::Color innerColor = sf::Color(100, 100, 100);
+    sf::Color outerColor(255, 255, 255, alpha);
+    sf::Color innerColor(100, 100, 100, alpha);
 
     sf::RectangleShape outer(sf::Vector2f(this->width, this->height));
     outer.setOrigin(this->width / 2.f, this->height / 2.f);

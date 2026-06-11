@@ -10,7 +10,8 @@ public:
 
     void setPivot(sf::Vector2f pivot);
     void setAngle(float radians); // 0 = straight up, positive = clockwise tilt
-    void draw(sf::RenderWindow& window) const;
+    // alpha < 255 draws a translucent "ghost" pole (used for the all-actors overlay).
+    void draw(sf::RenderWindow& window, sf::Uint8 alpha = 255) const;
 
 private:
     float length;

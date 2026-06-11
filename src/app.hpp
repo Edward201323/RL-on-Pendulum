@@ -39,6 +39,8 @@ private:
     void processEvents();
     void update(float dt);
     void resetEpisode();  // start a fresh swing-up attempt from the bottom
+    void resetActors();   // reseed the all-actors view with fresh random start angles
+    void updateActors(float dt);  // step every actor sim under the current policy
     void render();
 
     void launchTraining();      // spawn the Python trainer as a child process
@@ -77,6 +79,8 @@ private:
     pid_t trainingPid;        // child trainer pid (0 = none), killed on exit
     bool trainingPaused;      // true while training is paused (SIGSTOP) via Space
     int agentCount;           // episodes trained in parallel per update (Up/Down)
+    bool showActors;          // Left/Right: false = single policy, true = all-actors overlay
+    std::vector<CartPole> actors;  // local reconstruction of the parallel actors (overlay view)
 
     std::vector<float> scoreXs;  // learning curve: attempts ...
     std::vector<float> scoreYs;  // ... and the matching scores

@@ -102,6 +102,8 @@ App::App(int argc, char** argv)
       trainingPid(0),
       trainingPaused(false),
       agentCount(kDefaultAgents),
+      showActors(false),
+      actors(kMaxAgents),
       haveScoresMtime(false) {
     window.setFramerateLimit(60);
 
@@ -227,7 +229,7 @@ std::string App::greenText() const {
     const char* state = this->trainingPaused ? "Paused" : "Training";
     char buf[160];
     std::snprintf(buf, sizeof(buf),
-                  "%s  %d parallel\nEpisodes: %d\nMax score: %5.1f",
+                  "%s  %d actors\nEpisodes: %d\nMax score: %5.1f",
                   state, this->agentCount, trained, this->maxScore());
     return std::string(buf);
 }
@@ -266,6 +268,10 @@ void App::processEvents() {
         } else if (this->trainingMode && event.key.code == sf::Keyboard::Down) {
             if (this->agentCount > 1) --this->agentCount;           // fewer parallel episodes
             this->writeAgentCount();
+        } else if (this->trainingMode && event.key.code == sf::Keyboard::Right) {
+            if (!this->showActors) { this->showActors = true; this->resetActors(); }  // all-actors view
+        } else if (this->trainingMode && event.key.code == sf::Keyboard::Left) {
+            if (this->showActors) { this->showActors = false; this->resetEpisode(); }  // single-policy view
         }
     }
 }
@@ -324,6 +330,27 @@ void App::resetEpisode() {
     this->sim.setState(0.f, 0.f, kPi + dist(this->rng), 0.f);
 }
 
+// Reseed the all-actors overlay: grab the freshest policy and start every actor at
+// a random angle (centered), mirroring the trainer's random-start curriculum -- so
+// the overlay shows the same spread of swing-ups the real actors are learning from.
+void App::resetActors() {
+    this->snapshotPolicy();  // overlay uses the latest weights
+    this->episodeTime = 0.f;
+    std::uniform_real_distribution<float> ang(-kPi, kPi);
+    for (CartPole& a : this->actors) a.setState(0.f, 0.f, ang(this->rng), 0.f);
+}
+
+// Step each actor sim one frame under the current (deterministic) policy.
+void App::updateActors(float dt) {
+    for (int i = 0; i < this->agentCount; ++i) {
+        CartPole& a = this->actors[i];
+        const float action = this->policy.act(a.getX(), a.getVelocity(),
+                                              a.getAngle(), a.getAngularVelocity());
+        a.setControlForce(action * kMaxInputForce);
+        a.advance(dt);
+    }
+}
+
 void App::setControlForce(float force) { this->sim.setControlForce(force); }
 float App::getControlForce() const { return this->sim.getControlForce(); }
 
@@ -340,6 +367,15 @@ void App::update(float dt) {
     // The track length is a fixed physical property (config.trackLimit, in
     // meters) -- not derived from the window -- so the simulated walls are real.
     TrackLayout layout = computeTrackLayout(window);
+
+    // All-actors overlay: step every actor and recycle the batch each episode
+    // length (skip the single-policy demo entirely while this view is up).
+    if (this->showActors) {
+        this->updateActors(dt);
+        this->episodeTime += dt;
+        if (this->episodeTime >= kDemoEpisodeSeconds) this->resetActors();
+        return;
+    }
 
     // The policy outputs a normalized force in [-1, 1] each frame; scale it to
     // the cart's force command (it now chooses direction AND magnitude).
@@ -394,8 +430,23 @@ void App::render() {
     drawTrack(window, layout);
     this->hud.drawAxis(window, layout, this->sim.config().trackLimit, kPixelsPerMeter);
 
-    cart.draw(window);
-    pendulum.draw(window);
+    if (this->showActors) {
+        // Overlay every actor's pole on the one track, translucent so the spread of
+        // swing-ups reads at once. More actors -> fainter, so it never washes out.
+        const sf::Uint8 alpha = static_cast<sf::Uint8>(
+            std::max(40, 200 / std::max(1, this->agentCount)));
+        for (int i = 0; i < this->agentCount; ++i) {
+            const float sx = layout.center.x + this->actors[i].getX() * kPixelsPerMeter;
+            this->cart.setPosition(sx, layout.center.y);
+            this->pendulum.setPivot(this->cart.getPivot());
+            this->pendulum.setAngle(this->actors[i].getAngle());
+            this->cart.draw(window, alpha);
+            this->pendulum.draw(window, alpha);
+        }
+    } else {
+        cart.draw(window);
+        pendulum.draw(window);
+    }
 
     // Bottom-left: score-vs-attempts learning curve. Bottom-right: control force.
     if (this->trainingMode) {
