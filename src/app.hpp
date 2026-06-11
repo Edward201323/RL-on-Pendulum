@@ -79,7 +79,9 @@ private:
     pid_t trainingPid;        // child trainer pid (0 = none), killed on exit
     bool trainingPaused;      // true while training is paused (SIGSTOP) via Space
     int agentCount;           // episodes trained in parallel per update (Up/Down)
-    bool showActors;          // Left/Right: false = single policy, true = all-actors overlay
+    // Left/Right cycle through these views (looping).
+    enum View { kViewSingle = 0, kViewActors, kViewTraining, kViewCount };
+    int view;                 // current View
     std::vector<CartPole> actors;  // local reconstruction of the parallel actors (overlay view)
 
     std::vector<float> scoreXs;  // learning curve: attempts ...

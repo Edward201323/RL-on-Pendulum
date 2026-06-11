@@ -37,10 +37,12 @@ public:
     void drawGraph(sf::RenderWindow& window, const std::deque<float>& samples,
                    std::size_t capacity, float yRange, const char* label) const;
 
-    // Learning-curve graph (bottom-left): score (ys) vs. attempts (xs), the full
-    // history from 0 to current, with both axes auto-scaled to fit the data.
+    // Learning-curve graph: score (ys) vs. attempts (xs), the full history from 0
+    // to current, drawn into the rectangle (x0,y0)-(x1,y1). Caller picks the rect:
+    // a bottom slot for the small graph, or the whole play area for the training view.
     void drawScoreGraph(sf::RenderWindow& window, const std::vector<float>& xs,
-                        const std::vector<float>& ys, const char* label) const;
+                        const std::vector<float>& ys, const char* label,
+                        float x0, float y0, float x1, float y1) const;
 
 private:
     sf::Font font;

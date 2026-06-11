@@ -130,12 +130,8 @@ float Hud::drawTextBox(sf::RenderWindow& window, const std::string& str,
 }
 
 void Hud::drawScoreGraph(sf::RenderWindow& window, const std::vector<float>& xs,
-                         const std::vector<float>& ys, const char* label) const {
-    const sf::Vector2u ws = window.getSize();
-    const float gW = 540.f;                              // bottom-LEFT, mirrors force graph
-    const float x0 = 40.f, x1 = x0 + gW;
-    const float y0 = static_cast<float>(ws.y) * kPlayBottomFrac + 16.f;
-    const float y1 = static_cast<float>(ws.y) - 28.f;
+                         const std::vector<float>& ys, const char* label,
+                         float x0, float y0, float x1, float y1) const {
     const sf::Color border(120, 200, 150), trace(130, 225, 150), grid(150, 150, 150);
 
     sf::ConvexShape panel = roundedRect(x1 - x0, y1 - y0, 10.f);
@@ -168,27 +164,61 @@ void Hud::drawScoreGraph(sf::RenderWindow& window, const std::vector<float>& xs,
 
     const float xmax = xs.back() > 0.f ? xs.back() : 1.f;  // attempts: 0 .. current
     const float ymin = 0.f, ymax = 100.f;  // score is a fixed 0..100 "% upright"
+    auto sx = [&](float x) { return px0 + (x / xmax) * (px1 - px0); };
+    auto sy = [&](float y) { return py1 - ((y - ymin) / (ymax - ymin)) * (py1 - py0); };
 
+    // Vertical gridlines at "nice" round attempt counts (e.g. every 1000), so as the
+    // run grows the axis extends and more lines appear -- the plot grows over time.
+    auto niceStep = [](float rough) {
+        if (rough <= 0.f) return 1.f;
+        const float mag = std::pow(10.f, std::floor(std::log10(rough)));
+        const float n = rough / mag;
+        const float f = (n < 1.5f) ? 1.f : (n < 3.f) ? 2.f : (n < 7.f) ? 5.f : 10.f;
+        return f * mag;
+    };
+    const float xstep = niceStep(xmax / 6.f);  // aim for ~6 vertical divisions
+
+    // Faint gridlines drawn first so the fill and curve sit on top (clean area chart).
+    const sf::Color gridLine(150, 165, 160, 55);
+    for (int g = 1; g <= 4; ++g) {  // horizontal: 25/50/75/100
+        const float gy = sy(ymax * g / 4.f);
+        sf::Vertex h[] = {{{px0, gy}, gridLine}, {{px1, gy}, gridLine}};
+        window.draw(h, 2, sf::Lines);
+    }
+    for (float xt = 0.f; xt <= xmax + 0.5f; xt += xstep) {  // vertical: at each tick
+        const float gx = sx(xt);
+        sf::Vertex v[] = {{{gx, py0}, gridLine}, {{gx, py1}, gridLine}};
+        window.draw(v, 2, sf::Lines);
+    }
+
+    // Filled area under the curve (translucent green), then the bright curve on top.
+    const sf::Color fillColor(120, 200, 150, 70);
+    sf::VertexArray fill(sf::TriangleStrip, xs.size() * 2);
     sf::VertexArray curve(sf::LineStrip, xs.size());
     for (std::size_t i = 0; i < xs.size(); ++i) {
-        const float fx = px0 + (xs[i] / xmax) * (px1 - px0);
-        const float fy = py1 - ((ys[i] - ymin) / (ymax - ymin)) * (py1 - py0);
-        curve[i].position = sf::Vector2f(fx, fy);
-        curve[i].color = trace;
+        const float fx = sx(xs[i]), fy = sy(ys[i]);
+        fill[2 * i] = sf::Vertex(sf::Vector2f(fx, py1), fillColor);  // baseline
+        fill[2 * i + 1] = sf::Vertex(sf::Vector2f(fx, fy), fillColor);  // curve top
+        curve[i] = sf::Vertex(sf::Vector2f(fx, fy), trace);
     }
+    window.draw(fill);
     window.draw(curve);
 
-    // Title only -- the headline score number now lives in the green status box
-    // (as the recent average), so the graph just shows the trend.
+    // Labels: title (top-left), latest value (top-right), y gridline values (right),
+    // and the attempt range along the bottom.
     char buf[48];
     drawLabel(label, 16, sf::Color(220, 220, 220), x0 + 12.f, y0 + 6.f, 0);
-    std::snprintf(buf, sizeof(buf), "%.0f", ymax);
-    drawLabel(buf, 12, grid, x1 - 6.f, py0 - 6.f, 1);
-    std::snprintf(buf, sizeof(buf), "%.0f", ymin);
-    drawLabel(buf, 12, grid, x1 - 6.f, py1 - 12.f, 1);
-    std::snprintf(buf, sizeof(buf), "%.0f attempts", xmax);
-    drawLabel(buf, 12, grid, x1 - 6.f, y1 - 18.f, 1);
-    drawLabel("0", 12, grid, px0, y1 - 18.f, 0);
+    std::snprintf(buf, sizeof(buf), "%.1f", ys.back());
+    drawLabel(buf, 16, trace, x1 - 6.f, y0 + 6.f, 1);
+    for (int g = 1; g <= 3; ++g) {
+        std::snprintf(buf, sizeof(buf), "%d", 25 * g);
+        drawLabel(buf, 12, grid, x1 - 6.f, sy(ymax * g / 4.f) - 8.f, 1);
+    }
+    // Attempt number under each vertical gridline (0, then every nice step).
+    for (float xt = 0.f; xt <= xmax + 0.5f; xt += xstep) {
+        std::snprintf(buf, sizeof(buf), "%.0f", xt);
+        drawLabel(buf, 12, grid, sx(xt), y1 - 18.f, 0);
+    }
 }
 
 void Hud::drawGraph(sf::RenderWindow& window, const std::deque<float>& samples,

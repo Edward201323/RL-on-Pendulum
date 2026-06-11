@@ -102,7 +102,7 @@ App::App(int argc, char** argv)
       trainingPid(0),
       trainingPaused(false),
       agentCount(kDefaultAgents),
-      showActors(false),
+      view(kViewSingle),
       actors(kMaxAgents),
       haveScoresMtime(false) {
     window.setFramerateLimit(60);
@@ -268,10 +268,14 @@ void App::processEvents() {
         } else if (this->trainingMode && event.key.code == sf::Keyboard::Down) {
             if (this->agentCount > 1) --this->agentCount;           // fewer parallel episodes
             this->writeAgentCount();
-        } else if (this->trainingMode && event.key.code == sf::Keyboard::Right) {
-            if (!this->showActors) { this->showActors = true; this->resetActors(); }  // all-actors view
-        } else if (this->trainingMode && event.key.code == sf::Keyboard::Left) {
-            if (this->showActors) { this->showActors = false; this->resetEpisode(); }  // single-policy view
+        } else if (this->trainingMode && (event.key.code == sf::Keyboard::Left ||
+                                          event.key.code == sf::Keyboard::Right)) {
+            // Left/Right cycle through the views, wrapping (Right forward, Left back).
+            const int step = (event.key.code == sf::Keyboard::Right) ? 1 : kViewCount - 1;
+            this->view = (this->view + step) % kViewCount;
+            if (this->view == kViewSingle) this->resetEpisode();       // single policy
+            else if (this->view == kViewActors) this->resetActors();   // all-actors overlay
+            // kViewTraining: just the learning curve; nothing to reset
         }
     }
 }
@@ -368,9 +372,12 @@ void App::update(float dt) {
     // meters) -- not derived from the window -- so the simulated walls are real.
     TrackLayout layout = computeTrackLayout(window);
 
+    // Training view: only the learning curve matters; no sim to step.
+    if (this->view == kViewTraining) return;
+
     // All-actors overlay: step every actor and recycle the batch each episode
     // length (skip the single-policy demo entirely while this view is up).
-    if (this->showActors) {
+    if (this->view == kViewActors) {
         this->updateActors(dt);
         this->episodeTime += dt;
         if (this->episodeTime >= kDemoEpisodeSeconds) this->resetActors();
@@ -420,45 +427,67 @@ void App::update(float dt) {
 void App::render() {
     window.clear(sf::Color(100, 100, 100));
 
-    // Framed play area (cart/track) as the main focus.
-    this->hud.drawPlayfield(window);
+    const float W = static_cast<float>(window.getSize().x);
+    const float H = static_cast<float>(window.getSize().y);
+    // Bottom graph row (mirrors hud's kPlayBottomFrac = 0.72) and the main play area.
+    const float rowY0 = H * 0.72f + 16.f, rowY1 = H - 28.f;
+    char title[32];
+    std::snprintf(title, sizeof(title), "Curr Average  %.1f", this->avgRecentScore());
 
-    // Draw the track to match the physical limits: cart-center range (+-trackLimit
-    // meters) scaled to pixels, widened by half a cart so the body fits the rail.
-    TrackLayout layout = computeTrackLayout(window);
-    layout.width = 2.f * this->sim.config().trackLimit * kPixelsPerMeter + this->cart.getWidth();
-    drawTrack(window, layout);
-    this->hud.drawAxis(window, layout, this->sim.config().trackLimit, kPixelsPerMeter);
-
-    if (this->showActors) {
-        // Overlay every actor's pole on the one track, translucent so the spread of
-        // swing-ups reads at once. More actors -> fainter, so it never washes out.
-        const sf::Uint8 alpha = static_cast<sf::Uint8>(
-            std::max(40, 200 / std::max(1, this->agentCount)));
-        for (int i = 0; i < this->agentCount; ++i) {
-            const float sx = layout.center.x + this->actors[i].getX() * kPixelsPerMeter;
-            this->cart.setPosition(sx, layout.center.y);
-            this->pendulum.setPivot(this->cart.getPivot());
-            this->pendulum.setAngle(this->actors[i].getAngle());
-            this->cart.draw(window, alpha);
-            this->pendulum.draw(window, alpha);
-        }
+    if (this->view == kViewTraining) {
+        // Training view: the learning curve IS the main focus -- a big green panel
+        // filling the play area, no cart/track. (Its border is the green outline.)
+        this->hud.drawScoreGraph(window, this->scoreXs, this->scoreYs, title,
+                                 40.f, H * 0.23f, W - 40.f, H * 0.72f);
     } else {
-        cart.draw(window);
-        pendulum.draw(window);
+        // Framed play area (cart/track) as the main focus.
+        this->hud.drawPlayfield(window);
+
+        // Draw the track to match the physical limits: cart-center range (+-trackLimit
+        // meters) scaled to pixels, widened by half a cart so the body fits the rail.
+        TrackLayout layout = computeTrackLayout(window);
+        layout.width = 2.f * this->sim.config().trackLimit * kPixelsPerMeter + this->cart.getWidth();
+        drawTrack(window, layout);
+        this->hud.drawAxis(window, layout, this->sim.config().trackLimit, kPixelsPerMeter);
+
+        if (this->view == kViewActors) {
+            // Overlay every actor's pole on the one track, translucent so the spread of
+            // swing-ups reads at once. More actors -> fainter, so it never washes out.
+            const sf::Uint8 alpha = static_cast<sf::Uint8>(
+                std::max(40, 200 / std::max(1, this->agentCount)));
+            for (int i = 0; i < this->agentCount; ++i) {
+                const float sx = layout.center.x + this->actors[i].getX() * kPixelsPerMeter;
+                this->cart.setPosition(sx, layout.center.y);
+                this->pendulum.setPivot(this->cart.getPivot());
+                this->pendulum.setAngle(this->actors[i].getAngle());
+                this->cart.draw(window, alpha);
+                this->pendulum.draw(window, alpha);
+            }
+            // All-actors view: just the score graph, centered, no control-force trace.
+            const float cx = (W - 540.f) / 2.f;
+            this->hud.drawScoreGraph(window, this->scoreXs, this->scoreYs, title,
+                                     cx, rowY0, cx + 540.f, rowY1);
+        } else {
+            cart.draw(window);
+            pendulum.draw(window);
+            // Single view: score (bottom-left) + control force (bottom-right).
+            if (this->trainingMode) {
+                this->hud.drawScoreGraph(window, this->scoreXs, this->scoreYs, title,
+                                         40.f, rowY0, 40.f + 540.f, rowY1);
+            }
+            this->hud.drawGraph(window, this->forceHistory, kGraphSamples, kMaxInputForce,
+                                "Control force (N)");
+        }
     }
 
-    // Bottom-left: score-vs-attempts learning curve. Bottom-right: control force.
-    if (this->trainingMode) {
-        char title[32];
-        std::snprintf(title, sizeof(title), "Avg  %.1f", this->avgRecentScore());
-        this->hud.drawScoreGraph(window, this->scoreXs, this->scoreYs, title);
-    }
-    this->hud.drawGraph(window, this->forceHistory, kGraphSamples, kMaxInputForce,
-                        "Control force (N)");
     // Status panels, top-left. While training, split into two: an orange box for
     // the displayed run and a green box (next to it) for overall training progress.
-    if (this->trainingMode) {
+    if (this->trainingMode && this->view == kViewTraining) {
+        // Training view shows no single run, so drop the orange box and put the
+        // green training box in its place.
+        this->hud.drawTextBox(window, this->greenText(), 40.f, 22.f,
+                              sf::Color(120, 200, 150));                  // green
+    } else if (this->trainingMode) {
         const float w = this->hud.drawTextBox(window, this->orangeText(), 40.f, 22.f,
                                               sf::Color(225, 130, 95));   // coral
         this->hud.drawTextBox(window, this->greenText(), 40.f + w + 16.f, 22.f,
