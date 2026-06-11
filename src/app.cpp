@@ -27,6 +27,10 @@ constexpr float kMaxInputForce = 12.f;     // Newtons; MUST match F_MAX in pendu
 constexpr float kUprightCos = 0.95f;       // cos(theta) above this counts as "upright"
 constexpr float kDemoEpisodeSeconds = 10.f;  // auto-restart the demo this often (matches
                                              // the trainer's 600-step / 10 s episode)
+// Episodes trained in parallel per update: default + max. Max MUST match MAX_AGENTS
+// in reinforce.py. Up/Down change it live; the trainer polls train_agents.txt.
+constexpr int kDefaultAgents = 8;
+constexpr int kMaxAgents = 100;
 // Two-component live score, mirroring SCORE_W_* in reinforce.py: balance (time
 // upright) is primary, centering (sitting at x=0 while upright) the secondary
 // tie-breaker. Must sum to 1 so a perfect on-screen run reads 100.
@@ -97,6 +101,7 @@ App::App(int argc, char** argv)
       trainingMode(true),
       trainingPid(0),
       trainingPaused(false),
+      agentCount(kDefaultAgents),
       haveScoresMtime(false) {
     window.setFramerateLimit(60);
 
@@ -139,6 +144,7 @@ void App::launchTraining() {
     this->scoreXs.clear();
     this->scoreYs.clear();
     this->haveScoresMtime = false;
+    this->writeAgentCount();  // publish the starting parallel-episode count
 
     // No update count -> reinforce.py trains indefinitely until we kill it (S key).
     const std::string cmd = "cd '" + this->projectRoot +
@@ -221,8 +227,8 @@ std::string App::greenText() const {
     const char* state = this->trainingPaused ? "Paused" : "Training";
     char buf[160];
     std::snprintf(buf, sizeof(buf),
-                  "%s\nEpisodes: %d\nMax score: %5.1f",
-                  state, trained, this->maxScore());
+                  "%s  %d parallel\nEpisodes: %d\nMax score: %5.1f",
+                  state, this->agentCount, trained, this->maxScore());
     return std::string(buf);
 }
 
@@ -254,8 +260,27 @@ void App::processEvents() {
                 std::printf(this->trainingPaused ? "Training paused.\n"
                                                  : "Training resumed.\n");
             }
+        } else if (this->trainingMode && event.key.code == sf::Keyboard::Up) {
+            if (this->agentCount < kMaxAgents) ++this->agentCount;  // more parallel episodes
+            this->writeAgentCount();
+        } else if (this->trainingMode && event.key.code == sf::Keyboard::Down) {
+            if (this->agentCount > 1) --this->agentCount;           // fewer parallel episodes
+            this->writeAgentCount();
         }
     }
+}
+
+// Write the desired parallel-episode count to a file the trainer polls each
+// update (Up/Down change it live).
+void App::writeAgentCount() const {
+    const std::string path = this->projectRoot + "/python/train_agents.txt";
+    const std::string tmp = path + ".tmp";
+    std::ofstream out(tmp);
+    if (!out) return;
+    out << this->agentCount << "\n";
+    out.close();
+    std::error_code ec;
+    std::filesystem::rename(tmp, path, ec);  // atomic; no torn reads
 }
 
 // Reload the score-vs-attempts learning curve from the trainer's history file
@@ -274,6 +299,10 @@ void App::maybeReloadScores() {
     std::vector<float> xs, ys;
     float a = 0.f, s = 0.f;
     while (in >> a >> s) {  // skips a torn final line cleanly
+        // Defensive: drop any point whose attempt count isn't strictly increasing.
+        // A clean curve is monotonic; this collapses a torn/interleaved read into a
+        // single tidy line instead of a tangle of back-tracking segments.
+        if (!xs.empty() && a <= xs.back()) continue;
         xs.push_back(a);
         ys.push_back(s);
     }

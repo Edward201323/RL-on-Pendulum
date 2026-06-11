@@ -16,8 +16,10 @@ python/train_status.txt progress file), so the SFML app can hot-reload and
 visualize the policy improving live.
 """
 
+import math
 import os
 import sys
+from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
 import torch
@@ -30,7 +32,10 @@ EXPORT_EVERY = 5    # re-export policy.txt this often (updates) so the app can w
 GAMMA = 0.99        # discount: how much a future reward counts vs. an immediate one
 LR = 3e-3           # lower than 1e-2 for long-run stability (REINFORCE diverges easily)
 HIDDEN = 64
-BATCH = 8           # episodes rolled out and averaged into each gradient update (fixed)
+BATCH = 8           # default episodes per update (used when the app isn't driving it)
+MAX_AGENTS = 100    # upper bound for the live parallel-episode count (matches kMaxAgents)
+WORKERS = max(1, min(os.cpu_count() or 1, MAX_AGENTS))  # parallel rollout processes
+PER_WORKER_ENVS = math.ceil(MAX_AGENTS / WORKERS)       # envs each worker preallocates
 GRAD_CLIP = 1.0     # cap the gradient norm so one bad batch can't blow up the weights
 LOG_STD_MIN = -2.0  # clamp the policy std to [~0.14, ~1.6] so exploration can't collapse
 LOG_STD_MAX = 0.5   # (collapse -> stuck deterministic) or explode
@@ -94,15 +99,19 @@ def write_policy_txt(policy, path="python/policy.txt"):
     os.replace(tmp, path)  # atomic
 
 
-def append_history(attempts, score, path="python/train_history.txt"):
-    """Append one (attempts, score) point to the learning-curve history file.
+def write_history(points, path="python/train_history.txt"):
+    """Atomically rewrite the whole (attempts, score) learning curve.
 
-    `score` is an EMA-smoothed average return -- a steadier signal than the raw
-    noisy per-batch return. The app plots the whole file as a score-vs-attempts
-    curve. Open/append/close each call so the line is flushed for the reader.
+    Each `score` is an EMA-smoothed average over all the batch's agents -- a steady
+    signal. We rewrite the entire file via a temp + rename rather than appending so
+    a live reader (the app) always sees a complete, consistent snapshot, never a
+    torn or interleaved line (which showed up as a tangle of overlapping curves).
     """
-    with open(path, "a") as f:
-        f.write(f"{attempts} {score:.2f}\n")
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        for a, s in points:
+            f.write(f"{a} {s:.2f}\n")
+    os.replace(tmp, path)  # atomic
 
 
 def write_status(attempts, avg_return, done, path="python/train_status.txt"):
@@ -169,12 +178,49 @@ def collect_batch(envs, policy):
             returns.reshape(-1), episode_returns, episode_scores)
 
 
+def read_agent_count(path="python/train_agents.txt", default=BATCH):
+    """Parallel-episode count per update; the app sets this live via Up/Down.
+    Clamped to [1, MAX_AGENTS]. Falls back to the default if the file is absent."""
+    try:
+        with open(path) as f:
+            return max(1, min(MAX_AGENTS, int(float(f.read().split()[0]))))
+    except Exception:
+        return default
+
+
+def _split(total, parts):
+    """Spread `total` episodes as evenly as possible over `parts` workers."""
+    base, rem = divmod(total, parts)
+    return [base + (1 if i < rem else 0) for i in range(parts)]
+
+
+# --- worker process state (one set per process, built once by the initializer) ---
+_W_ENVS = None
+_W_POLICY = None
+
+
+def _init_worker():
+    """Runs once per worker process: build its envs + a policy copy, decorrelate RNG."""
+    global _W_ENVS, _W_POLICY
+    torch.set_num_threads(1)
+    np.random.seed(os.getpid())  # different exploration noise per worker
+    _W_ENVS = [PendulumSwingUpEnv() for _ in range(PER_WORKER_ENVS)]
+    _W_POLICY = Policy()
+
+
+def _rollout_task(state_dict, n):
+    """Roll out `n` episodes in this worker with the given weights. None if n == 0."""
+    if n <= 0:
+        return None
+    _W_POLICY.load_state_dict(state_dict)
+    return collect_batch(_W_ENVS[:n], _W_POLICY)
+
+
 def main():
     # Optional CLI cap (for standalone runs); None = train indefinitely (the app
     # launches it this way and stops it by killing the process).
     updates = int(sys.argv[1]) if len(sys.argv) > 1 else None
     torch.set_num_threads(1)  # the net is tiny; threading overhead only slows it down
-    envs = [PendulumSwingUpEnv() for _ in range(BATCH)]  # fixed batch of episodes per update
     policy = Policy()
     # weight_decay keeps the network weights from growing unbounded (which is what
     # saturates the output into the +-max-force bang-bang chatter).
@@ -183,59 +229,73 @@ def main():
     # Export the starting (random) policy so a live viewer shows the "before".
     write_policy_txt(policy)
     write_status(0, 0.0, done=False)
-    open("python/train_history.txt", "w").close()  # fresh learning-curve log
+    history = []  # (attempts, score) learning curve; rewritten atomically each export
+    write_history(history)  # fresh, empty curve
 
     score_ema = None  # EMA-smoothed 0..100 "% upright" score = the plotted "score"
     update = 0
     attempt = 0
-    while updates is None or update < updates:
-        obs_flat, act_flat, ret_flat, episode_returns, episode_scores = collect_batch(envs, policy)
+    # Persistent pool: WORKERS processes, each holding its own envs + policy copy, so
+    # the per-update rollouts run in true parallel (no GIL, no per-update env rebuild).
+    with ProcessPoolExecutor(max_workers=WORKERS, initializer=_init_worker) as pool:
+        while updates is None or update < updates:
+            n_total = read_agent_count()  # live parallel-episode count (Up/Down)
+            # Fan the episodes out across workers, gather, and concatenate the results.
+            sd = {k: v.cpu() for k, v in policy.state_dict().items()}
+            chunks = _split(n_total, WORKERS)
+            parts = [r for r in pool.map(_rollout_task, [sd] * WORKERS, chunks) if r is not None]
+            obs_flat = np.concatenate([p[0] for p in parts])
+            act_flat = np.concatenate([p[1] for p in parts])
+            ret_flat = np.concatenate([p[2] for p in parts])
+            episode_returns = np.concatenate([p[3] for p in parts])
+            episode_scores = np.concatenate([p[4] for p in parts])
 
-        # One batched forward/backward over every collected step (the speed win).
-        obs_t = torch.from_numpy(obs_flat)                  # [N, 5]
-        act_t = torch.from_numpy(act_flat)                  # [N]
-        returns = torch.from_numpy(ret_flat)                # [N]
-        # Standardize returns across the whole batch. This subtracts a baseline
-        # (the batch mean) so an action is rewarded only for beating average, and
-        # rescales to unit variance -- the single biggest stabilizer for REINFORCE.
-        returns = (returns - returns.mean()) / (returns.std() + 1e-8)
+            # One batched forward/backward over every collected step (the speed win).
+            obs_t = torch.from_numpy(obs_flat)                  # [N, 5]
+            act_t = torch.from_numpy(act_flat)                  # [N]
+            returns = torch.from_numpy(ret_flat)                # [N]
+            # Standardize returns across the whole batch. This subtracts a baseline
+            # (the batch mean) so an action is rewarded only for beating average, and
+            # rescales to unit variance -- the single biggest stabilizer for REINFORCE.
+            returns = (returns - returns.mean()) / (returns.std() + 1e-8)
 
-        means = policy(obs_t).squeeze(-1)  # [N], now WITH gradients
-        dist = torch.distributions.Normal(means, policy.log_std.exp())
-        log_probs = dist.log_prob(act_t)   # log pi(a_t|s_t) for every step
+            means = policy(obs_t).squeeze(-1)  # [N], now WITH gradients
+            dist = torch.distributions.Normal(means, policy.log_std.exp())
+            log_probs = dist.log_prob(act_t)   # log pi(a_t|s_t) for every step
 
-        # Policy-gradient loss: maximize sum_t log pi(a_t|s_t) * G_t, so minimize
-        # its negative. Above-average returns push their action's log-prob up;
-        # below-average ones push it down. Divide by the batch size for a stable step.
-        loss = -(log_probs * returns).sum() / BATCH
+            # Policy-gradient loss: maximize sum_t log pi(a_t|s_t) * G_t, so minimize
+            # its negative. Above-average returns push their action's log-prob up;
+            # below-average ones push it down. Divide by the episode count for a stable step.
+            loss = -(log_probs * returns).sum() / n_total
 
-        optimizer.zero_grad()
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(policy.parameters(), GRAD_CLIP)
-        optimizer.step()
-        # Keep the exploration std in a sane band so the policy can't lock into a
-        # collapsed deterministic behavior (or blow up).
-        with torch.no_grad():
-            policy.log_std.clamp_(LOG_STD_MIN, LOG_STD_MAX)
+            optimizer.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(policy.parameters(), GRAD_CLIP)
+            optimizer.step()
+            # Keep the exploration std in a sane band so the policy can't lock into a
+            # collapsed deterministic behavior (or blow up).
+            with torch.no_grad():
+                policy.log_std.clamp_(LOG_STD_MIN, LOG_STD_MAX)
 
-        # Print every individual attempt's total reward (return).
-        for r in episode_returns:
-            attempt += 1
-            print(f"attempt {attempt:6d}   return {float(r):8.1f}")
-        # The plotted "score" is the 0..100 % upright, EMA-smoothed for stability.
-        avg_score = float(np.mean(episode_scores))
-        score_ema = avg_score if score_ema is None else 0.9 * score_ema + 0.1 * avg_score
+            # Print every individual attempt's total reward (return).
+            for r in episode_returns:
+                attempt += 1
+                print(f"attempt {attempt:6d}   return {float(r):8.1f}")
+            # The plotted "score" is the 0..100 % upright, EMA-smoothed for stability.
+            avg_score = float(np.mean(episode_scores))
+            score_ema = avg_score if score_ema is None else 0.9 * score_ema + 0.1 * avg_score
 
-        # Re-export periodically so the SFML app can hot-reload and show progress.
-        # Also checkpoint policy.pt here -- with the infinite loop the post-loop
-        # save never runs, and the trainer is stopped by being killed.
-        if (update + 1) % EXPORT_EVERY == 0:
-            write_policy_txt(policy)
-            torch.save(policy.state_dict(), "python/policy.pt")
-            write_status(attempt, score_ema, done=False)  # attempt = cumulative episodes
-            append_history(attempt, score_ema)
+            # Re-export periodically so the SFML app can hot-reload and show progress.
+            # Also checkpoint policy.pt here -- with the infinite loop the post-loop
+            # save never runs, and the trainer is stopped by being killed.
+            if (update + 1) % EXPORT_EVERY == 0:
+                write_policy_txt(policy)
+                torch.save(policy.state_dict(), "python/policy.pt")
+                write_status(attempt, score_ema, done=False)  # attempt = cumulative episodes
+                history.append((attempt, score_ema))
+                write_history(history)
 
-        update += 1
+            update += 1
 
     # Reached only for a finite CLI cap; the app trains indefinitely.
     write_policy_txt(policy)

@@ -43,6 +43,7 @@ private:
 
     void launchTraining();      // spawn the Python trainer as a child process
     void snapshotPolicy();      // load the latest policy + capture its attempt count
+    void writeAgentCount() const;      // tell the trainer how many episodes to run in parallel
     void maybeReloadScores();   // reload the score-vs-attempts history when it changes
     std::string displayText() const;   // single status box (--watch mode)
     std::string orangeText() const;    // orange box: this displayed run (policy/time/score)
@@ -74,7 +75,8 @@ private:
     std::string policyPath;   // projectRoot + "/python/policy.txt"
     bool trainingMode;        // true = launch training and show its progress
     pid_t trainingPid;        // child trainer pid (0 = none), killed on exit
-    bool trainingPaused;      // true while training is paused (SIGSTOP) via P
+    bool trainingPaused;      // true while training is paused (SIGSTOP) via Space
+    int agentCount;           // episodes trained in parallel per update (Up/Down)
 
     std::vector<float> scoreXs;  // learning curve: attempts ...
     std::vector<float> scoreYs;  // ... and the matching scores
