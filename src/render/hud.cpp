@@ -129,6 +129,16 @@ float Hud::drawTextBox(sf::RenderWindow& window, const std::string& str,
     return boxW;
 }
 
+void Hud::drawCornerHint(sf::RenderWindow& window, const std::string& str) const {
+    if (!this->hasFont) return;
+    sf::Text t(str, this->font, 14);
+    t.setFillColor(sf::Color(165, 165, 165));
+    const sf::FloatRect b = t.getLocalBounds();
+    t.setOrigin(std::round(b.left + b.width), 0.f);  // anchor the right edge
+    t.setPosition(static_cast<float>(window.getSize().x) - 24.f, 20.f);
+    window.draw(t);
+}
+
 void Hud::drawScoreGraph(sf::RenderWindow& window, const std::vector<float>& xs,
                          const std::vector<float>& ys, const char* label,
                          float x0, float y0, float x1, float y1) const {
@@ -222,13 +232,13 @@ void Hud::drawScoreGraph(sf::RenderWindow& window, const std::vector<float>& xs,
 }
 
 void Hud::drawGraph(sf::RenderWindow& window, const std::deque<float>& samples,
-                    std::size_t capacity, float yRange, const char* label) const {
+                    std::size_t capacity, float yRange, const char* label,
+                    float xLeft) const {
     const sf::Vector2u ws = window.getSize();
-    // A modest, secondary panel in the bottom-right corner (the cart/track is the
-    // main focus, so the graph is deliberately small).
+    // A modest, secondary panel (the cart/track is the main focus, so it's small).
     const float gW = 540.f;
-    const float x1 = static_cast<float>(ws.x) - 40.f;
-    const float x0 = x1 - gW;
+    const float x0 = (xLeft >= 0.f) ? xLeft : static_cast<float>(ws.x) - 40.f - gW;
+    const float x1 = x0 + gW;
     // Sit just below the play area so it can never overlap the track.
     const float y0 = static_cast<float>(ws.y) * kPlayBottomFrac + 16.f;
     const float y1 = static_cast<float>(ws.y) - 28.f;
@@ -295,3 +305,4 @@ void Hud::drawGraph(sf::RenderWindow& window, const std::deque<float>& samples,
         }
     }
 }
+

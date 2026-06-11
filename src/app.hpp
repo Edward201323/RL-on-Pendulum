@@ -49,6 +49,7 @@ private:
     void writeAgentCount() const;      // tell the trainer how many episodes to run in parallel
     void maybeReloadScores();   // reload the score-vs-attempts history when it changes
     std::string displayText() const;   // single status box (--watch mode)
+    std::string controlsText() const;  // top-right corner key hints
     std::string orangeText() const;    // orange box: this displayed run (policy/time/score)
     std::string greenText() const;     // green box: overall training (state/episodes/avg)
     float displayedScore() const;      // two-component score of the on-screen run so far
@@ -80,8 +81,8 @@ private:
     pid_t trainingPid;        // child trainer pid (0 = none), killed on exit
     bool trainingPaused;      // true while training is paused (SIGSTOP) via Space
     int agentCount;           // episodes trained in parallel per update (Up/Down)
-    // Left/Right cycle through these views (looping).
-    enum View { kViewSingle = 0, kViewActors, kViewTraining, kViewCount };
+    // Left/Right toggle between these views.
+    enum View { kViewSingle = 0, kViewActors, kViewCount };
     int view;                 // current View
     // All-actors overlay: a real rollout batch exported by the trainer, replayed.
     // x/theta are flat [steps * count], indexed frame*count + actor.

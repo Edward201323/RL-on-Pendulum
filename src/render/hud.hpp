@@ -34,10 +34,15 @@ public:
     float drawTextBox(sf::RenderWindow& window, const std::string& text,
                       float x, float y, sf::Color outline) const;
 
-    // Scrolling time graph (bottom-right): the last `capacity` samples, newest at
-    // the right, on a fixed +-yRange vertical scale. Used for the control-force trace.
+    // Small, unboxed, faint right-aligned text in the top-right corner (controls hint).
+    void drawCornerHint(sf::RenderWindow& window, const std::string& text) const;
+
+    // Scrolling time graph: the last `capacity` samples, newest at the right, on a
+    // fixed +-yRange vertical scale. Used for the control-force trace. xLeft sets the
+    // panel's left edge; < 0 keeps the default bottom-right slot.
     void drawGraph(sf::RenderWindow& window, const std::deque<float>& samples,
-                   std::size_t capacity, float yRange, const char* label) const;
+                   std::size_t capacity, float yRange, const char* label,
+                   float xLeft = -1.f) const;
 
     // Learning-curve graph: score (ys) vs. attempts (xs), the full history from 0
     // to current, drawn into the rectangle (x0,y0)-(x1,y1). Caller picks the rect:
