@@ -36,6 +36,13 @@ GRAD_CLIP = 1.0     # cap the gradient norm so one bad batch can't blow up the w
 LOG_STD_MIN = -2.0  # clamp the policy std to [~0.14, ~1.6] so exploration can't collapse
 LOG_STD_MAX = 0.5   # (collapse -> stuck deterministic) or explode
 
+# Score = two weighted components, must sum to 1.0 so a perfect run scores 100.
+# Balance (time spent upright) is primary; centering (sitting at x=0 *while* upright)
+# is the secondary tie-breaker. Centering is GATED on uprightness -- being centered
+# while the pole hangs earns nothing -- so balancing is always worth more.
+SCORE_W_BALANCE = 0.8   # max points from keeping the pole up
+SCORE_W_CENTER = 0.2    # max extra points from doing it centered at x=0
+
 # Observations are SI mixed with sin/cos: x ~ +-1 m, x_dot ~ a few m/s, sin/cos
 # are O(1), theta_dot ~ a few rad/s. Divide by a fixed per-component scale so
 # every input is roughly O(1) (keeps the network's inputs balanced).
@@ -131,13 +138,15 @@ def collect_batch(envs, policy):
     """
     B = len(envs)
     T = envs[0].max_steps
+    limit = envs[0].sim.config.track_limit  # max |x|; turns position into a 0..1 fraction
     obs = np.stack([e.reset()[0] for e in envs]).astype(np.float32)  # [B, 5]
     std = policy.log_std.exp().item()  # constant during the rollout (no updates yet)
 
     obs_seq = np.empty((T, B, 5), dtype=np.float32)
     act_seq = np.empty((T, B), dtype=np.float32)
     rew_seq = np.empty((T, B), dtype=np.float32)
-    upright_sum = np.zeros(B, dtype=np.float32)  # accumulates max(0, cos theta)
+    upright_sum = np.zeros(B, dtype=np.float32)   # sum of max(0, cos theta): "how upright"
+    centered_sum = np.zeros(B, dtype=np.float32)  # same, weighted by centeredness: "upright AND centered"
 
     with torch.no_grad():
         for t in range(T):
@@ -145,7 +154,10 @@ def collect_batch(envs, policy):
             actions = np.random.normal(means, std).astype(np.float32)  # sample [B]
             obs_seq[t] = obs
             act_seq[t] = actions
-            upright_sum += np.maximum(0.0, obs[:, 3])  # obs[:,3] = cos(theta)
+            up = np.maximum(0.0, obs[:, 3])                      # obs[:,3] = cos(theta), >0 in upper half
+            center_q = np.clip(1.0 - np.abs(obs[:, 0]) / limit, 0.0, 1.0)  # 1 at x=0, 0 at the edge
+            upright_sum += up
+            centered_sum += up * center_q                       # centering only counts while upright
             for i, e in enumerate(envs):
                 obs[i], rew_seq[t, i], _, _, _ = e.step(float(actions[i]))
 
@@ -157,7 +169,13 @@ def collect_batch(envs, policy):
         returns[t] = g
 
     episode_returns = rew_seq.sum(axis=0)         # total reward per episode [B]
-    episode_scores = 100.0 * upright_sum / T      # 0..100 "% upright" per episode [B]
+    # Two-component 0..100 score. balance = fraction of the episode spent upright.
+    # centering = uprightness-weighted average centeredness (how centered it was *while*
+    # balanced), so 0..1 and only earned when the pole is actually up. Balance dominates;
+    # centering is the SCORE_W_CENTER-weighted tie-breaker on top.
+    balance = upright_sum / T                                      # 0..1
+    centering = centered_sum / np.maximum(upright_sum, 1e-8)       # 0..1, guarded
+    episode_scores = 100.0 * balance * (SCORE_W_BALANCE + SCORE_W_CENTER * centering)
     return (obs_seq.reshape(-1, 5), act_seq.reshape(-1),
             returns.reshape(-1), episode_returns, episode_scores)
 

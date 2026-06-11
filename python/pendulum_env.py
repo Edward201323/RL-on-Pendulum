@@ -46,8 +46,28 @@ EDGE_CONTACT_PENALTY = 50.0   # touching a wall: must clearly never be worth it
 EDGE_APPROACH_PENALTY = 3.0   # grows as the cart enters the outer band (below)
 EDGE_MARGIN_FRAC = 0.85       # start the approach penalty past 85% of track_limit
                               #   (i.e. punish loitering in the outer ~15%)
-CENTERING_PENALTY = 0.3       # pull the *balanced* cart back to x = 0; kept well
-                              #   under the uprightness signal so it stays secondary
+CENTERING_PENALTY = 0.3       # quadratic pull toward x = 0; strong far from center,
+                              #   but its gradient VANISHES at the middle (so on its
+                              #   own the cart parks off-center in a dead band)
+CENTERING_LINEAR = 0.1        # linear (L1) pull whose gradient is CONSTANT down to 0,
+                              #   so there is always a nudge to *exact* center; this is
+                              #   what actually settles the cart at x = 0. Keep it under
+                              #   the uprightness signal so balancing still comes first.
+# Sustained off-center penalty: a *dwell timer*. We count how long the cart has
+# been continuously off-center; after a grace period the penalty kicks in and grows
+# the longer it stays out there (the instantaneous CENTERING_PENALTY can't tell a
+# brief pump from camping). Re-entering the center zone resets the timer.
+SUSTAINED_OFFCENTER_PENALTY = 0.1  # per-step price per *second* past grace (capped below).
+                              #   Kept small + bounded: an unbounded dwell penalty
+                              #   dominates the episode return and crowds the uprightness
+                              #   signal out of the REINFORCE gradient (training stalls).
+CENTER_DEADZONE = 0.15        # |x|/track_limit within this counts as "centered"
+                              #   (timer counts up outside it, resets inside)
+OFFCENTER_GRACE = 1.0         # seconds it may sit off-center for free (room to pump)
+                              #   before the dwell penalty starts
+OFFCENTER_TIME_CAP = 3.0      # cap the counted dwell time so the penalty saturates
+                              #   (max charge = PENALTY*(CAP-GRACE) per step) instead of
+                              #   growing without limit and swamping everything else
 
 # Continuous action: a single value in [-1, 1] scaled to a horizontal force on
 # the cart (-1 = full push left, +1 = full push right, 0 = coast). The policy
@@ -89,6 +109,7 @@ class PendulumSwingUpEnv(gym.Env):
         self.sim.set_state(0.0, 0.0, theta, 0.0)
         self.steps = 0
         self.prev_force = 0.0  # for the control-smoothness penalty
+        self.offcenter_time = 0.0  # seconds the cart has been continuously off-center
         return self._obs(), {}
 
     def step(self, action):
@@ -110,10 +131,25 @@ class PendulumSwingUpEnv(gym.Env):
         # wrap-safe, unlike theta**2.
         upright = math.cos(theta)
         reward = upright
-        # Centering: pull the cart toward x = 0. Quadratic so it is gentle near
-        # the middle (won't fight the swing-up, which needs room to pump) but
-        # firms up off-center, settling the balanced cart at the track center.
-        reward -= CENTERING_PENALTY * (self.sim.x / limit) ** 2
+        frac = abs(self.sim.x) / limit          # |position| as a fraction of track half-width
+        # Centering: pull the cart toward x = 0. The quadratic is gentle near the
+        # middle (won't fight the swing-up, which needs room to pump) but firms up
+        # off-center; the linear term adds a constant pull that does NOT die out at
+        # the center, which is what makes the cart settle at *exactly* x = 0 instead
+        # of parking in the quadratic's flat dead band a quarter-track off.
+        reward -= CENTERING_PENALTY * frac ** 2
+        reward -= CENTERING_LINEAR * frac
+        # Sustained off-center: dwell timer. Count seconds the cart has stayed
+        # continuously off-center; once past the grace period, charge for every
+        # extra second out there (growing the longer it loiters). Re-centering
+        # resets it, so a brief swing-up pump never trips it.
+        if frac > CENTER_DEADZONE:
+            self.offcenter_time = min(self.offcenter_time + DT, OFFCENTER_TIME_CAP)
+        else:
+            self.offcenter_time = 0.0
+        over_grace = self.offcenter_time - OFFCENTER_GRACE
+        if over_grace > 0.0:
+            reward -= SUSTAINED_OFFCENTER_PENALTY * over_grace
         reward -= 0.005 * theta_dot ** 2                   # mild: discourage spinning
         # Steep penalty once the pole is spinning faster than swing-up needs --
         # kills the "vibrate fast near the top to game cos(theta)" exploit.
@@ -131,7 +167,6 @@ class PendulumSwingUpEnv(gym.Env):
         # Approaching-edge penalty: ramp up smoothly once the cart pushes into
         # the outer band, so it learns to ease off *before* the wall instead of
         # only reacting on contact. Zero through the inner (1 - margin) of track.
-        frac = abs(self.sim.x) / limit
         if frac > EDGE_MARGIN_FRAC:
             over = (frac - EDGE_MARGIN_FRAC) / (1.0 - EDGE_MARGIN_FRAC)  # 0..1+
             reward -= EDGE_APPROACH_PENALTY * over ** 2
