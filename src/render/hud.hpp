@@ -18,8 +18,10 @@ public:
     Hud();
 
     // Rounded frame around the play area (cart/track/pole). Drawn first, behind
-    // the scene, so the cart and track read as the main focus.
-    void drawPlayfield(sf::RenderWindow& window) const;
+    // the scene, so the cart and track read as the main focus. Outline defaults to
+    // coral; pass green for the all-actors (training) view.
+    void drawPlayfield(sf::RenderWindow& window,
+                       sf::Color outline = sf::Color(225, 130, 95)) const;
 
     // Position scale (in meters) drawn under the track, aligned to the layout.
     // trackLimit is the cart's max |x| in meters; pixelsPerMeter maps it to screen.

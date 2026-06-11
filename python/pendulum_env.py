@@ -46,7 +46,7 @@ EDGE_CONTACT_PENALTY = 50.0   # touching a wall: must clearly never be worth it
 EDGE_APPROACH_PENALTY = 3.0   # grows as the cart enters the outer band (below)
 EDGE_MARGIN_FRAC = 0.85       # start the approach penalty past 85% of track_limit
                               #   (i.e. punish loitering in the outer ~15%)
-CENTERING_PENALTY = 0.3       # quadratic pull toward x = 0; strong far from center,
+CENTERING_PENALTY = 0.25      # quadratic pull toward x = 0; strong far from center,
                               #   but its gradient VANISHES at the middle (so on its
                               #   own the cart parks off-center in a dead band)
 CENTERING_LINEAR = 0.1        # linear (L1) pull whose gradient is CONSTANT down to 0,

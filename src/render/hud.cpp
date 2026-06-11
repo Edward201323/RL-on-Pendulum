@@ -52,7 +52,7 @@ Hud::Hud() : hasFont(false) {
     }
 }
 
-void Hud::drawPlayfield(sf::RenderWindow& window) const {
+void Hud::drawPlayfield(sf::RenderWindow& window, sf::Color outline) const {
     const sf::Vector2u ws = window.getSize();
     const float x = 40.f;
     const float y = static_cast<float>(ws.y) * 0.23f;  // below the top-left status box
@@ -62,7 +62,7 @@ void Hud::drawPlayfield(sf::RenderWindow& window) const {
     box.setPosition(x, y);
     box.setFillColor(sf::Color(72, 72, 72));
     box.setOutlineThickness(3.f);
-    box.setOutlineColor(sf::Color(225, 130, 95));  // coral, like the reference UI
+    box.setOutlineColor(outline);
     window.draw(box);
 }
 

@@ -34,8 +34,8 @@ constexpr int kMaxAgents = 100;
 // Two-component live score, mirroring SCORE_W_* in reinforce.py: balance (time
 // upright) is primary, centering (sitting at x=0 while upright) the secondary
 // tie-breaker. Must sum to 1 so a perfect on-screen run reads 100.
-constexpr float kScoreWBalance = 0.8f;
-constexpr float kScoreWCenter = 0.2f;
+constexpr float kScoreWBalance = 0.85f;
+constexpr float kScoreWCenter = 0.15f;
 
 // Physics runs in SI (meters); rendering is in pixels. This is the one scale
 // that converts between them for drawing.
@@ -103,7 +103,10 @@ App::App(int argc, char** argv)
       trainingPaused(false),
       agentCount(kDefaultAgents),
       view(kViewSingle),
-      actors(kMaxAgents),
+      actorCount(0),
+      actorSteps(0),
+      actorFrame(0),
+      haveActorsMtime(false),
       haveScoresMtime(false) {
     window.setFramerateLimit(60);
 
@@ -143,9 +146,13 @@ void App::launchTraining() {
     std::error_code ec;
     std::filesystem::remove(this->projectRoot + "/python/train_status.txt", ec);
     std::filesystem::remove(this->projectRoot + "/python/train_history.txt", ec);
+    std::filesystem::remove(this->projectRoot + "/python/actors.txt", ec);
     this->scoreXs.clear();
     this->scoreYs.clear();
     this->haveScoresMtime = false;
+    this->actorCount = 0;
+    this->actorSteps = 0;
+    this->haveActorsMtime = false;
     this->writeAgentCount();  // publish the starting parallel-episode count
 
     // No update count -> reinforce.py trains indefinitely until we kill it (S key).
@@ -227,10 +234,19 @@ std::string App::greenText() const {
       in >> trained >> ret >> done; }
 
     const char* state = this->trainingPaused ? "Paused" : "Training";
-    char buf[160];
-    std::snprintf(buf, sizeof(buf),
-                  "%s  %d actors\nEpisodes: %d\nMax score: %5.1f",
-                  state, this->agentCount, trained, this->maxScore());
+    char buf[200];
+    if (this->view == kViewActors) {
+        // Replay runs one frame per displayed frame (~60 FPS), so seconds = frame/60.
+        const float secs = this->actorFrame / 60.f;
+        const float total = this->actorSteps / 60.f;
+        std::snprintf(buf, sizeof(buf),
+                      "%s  %d actors\nEpisodes: %d\nMax score: %5.1f\nBatch: %4.1f / %4.1fs",
+                      state, this->agentCount, trained, this->maxScore(), secs, total);
+    } else {
+        std::snprintf(buf, sizeof(buf),
+                      "%s  %d actors\nEpisodes: %d\nMax score: %5.1f",
+                      state, this->agentCount, trained, this->maxScore());
+    }
     return std::string(buf);
 }
 
@@ -273,8 +289,12 @@ void App::processEvents() {
             // Left/Right cycle through the views, wrapping (Right forward, Left back).
             const int step = (event.key.code == sf::Keyboard::Right) ? 1 : kViewCount - 1;
             this->view = (this->view + step) % kViewCount;
-            if (this->view == kViewSingle) this->resetEpisode();       // single policy
-            else if (this->view == kViewActors) this->resetActors();   // all-actors overlay
+            if (this->view == kViewSingle) {                           // single policy
+                this->snapshotPolicy();   // show the most recent policy
+                this->resetEpisode();
+            } else if (this->view == kViewActors) {                    // all-actors overlay
+                this->resetActors();      // load the most recent batch
+            }
             // kViewTraining: just the learning curve; nothing to reset
         }
     }
@@ -334,25 +354,51 @@ void App::resetEpisode() {
     this->sim.setState(0.f, 0.f, kPi + dist(this->rng), 0.f);
 }
 
-// Reseed the all-actors overlay: grab the freshest policy and start every actor at
-// a random angle (centered), mirroring the trainer's random-start curriculum -- so
-// the overlay shows the same spread of swing-ups the real actors are learning from.
+// Restart the actor-overlay replay and load the latest rollout batch right away.
 void App::resetActors() {
-    this->snapshotPolicy();  // overlay uses the latest weights
-    this->episodeTime = 0.f;
-    std::uniform_real_distribution<float> ang(-kPi, kPi);
-    for (CartPole& a : this->actors) a.setState(0.f, 0.f, ang(this->rng), 0.f);
+    this->actorFrame = 0;
+    this->haveActorsMtime = false;  // force a fresh read
+    this->maybeReloadActors();
 }
 
-// Step each actor sim one frame under the current (deterministic) policy.
-void App::updateActors(float dt) {
-    for (int i = 0; i < this->agentCount; ++i) {
-        CartPole& a = this->actors[i];
-        const float action = this->policy.act(a.getX(), a.getVelocity(),
-                                              a.getAngle(), a.getAngularVelocity());
-        a.setControlForce(action * kMaxInputForce);
-        a.advance(dt);
+// Advance the replay one frame, looping. A newer rollout is only swapped in when
+// the replay wraps back to the start, so each batch plays its full ~10 s first.
+void App::updateActors(float /*dt*/) {
+    if (this->actorSteps <= 0) { this->maybeReloadActors(); return; }  // need a first batch
+    this->actorFrame = (this->actorFrame + 1) % this->actorSteps;
+    if (this->actorFrame == 0) this->maybeReloadActors();  // swap only at the loop boundary
+}
+
+// Reload the exported rollout batch (real actor trajectories) when it changes.
+// File format: "B T" header, then T lines of B "x theta" pairs (t-major).
+void App::maybeReloadActors() {
+    namespace fs = std::filesystem;
+    const std::string path = this->projectRoot + "/python/actors.txt";
+    std::error_code ec;
+    const fs::file_time_type t = fs::last_write_time(path, ec);
+    if (ec) return;  // no rollout exported yet
+    if (this->haveActorsMtime && t == this->actorsMtime) return;
+    this->actorsMtime = t;
+    this->haveActorsMtime = true;
+
+    std::ifstream in(path);
+    int B = 0, T = 0;
+    if (!(in >> B >> T) || B <= 0 || T <= 0) return;
+    std::vector<float> xs, ths;
+    xs.reserve(static_cast<std::size_t>(B) * T);
+    ths.reserve(static_cast<std::size_t>(B) * T);
+    float x = 0.f, th = 0.f;
+    for (long i = 0; i < static_cast<long>(B) * T; ++i) {
+        if (!(in >> x >> th)) break;
+        xs.push_back(x);
+        ths.push_back(th);
     }
+    if (static_cast<int>(xs.size()) < B * T) return;  // torn/partial -- keep the old batch
+    this->actorX.swap(xs);
+    this->actorTheta.swap(ths);
+    this->actorCount = B;
+    this->actorSteps = T;
+    if (this->actorFrame >= T) this->actorFrame = 0;
 }
 
 void App::setControlForce(float force) { this->sim.setControlForce(force); }
@@ -375,12 +421,9 @@ void App::update(float dt) {
     // Training view: only the learning curve matters; no sim to step.
     if (this->view == kViewTraining) return;
 
-    // All-actors overlay: step every actor and recycle the batch each episode
-    // length (skip the single-policy demo entirely while this view is up).
+    // All-actors overlay: replay the exported rollout batch (skip the single demo).
     if (this->view == kViewActors) {
         this->updateActors(dt);
-        this->episodeTime += dt;
-        if (this->episodeTime >= kDemoEpisodeSeconds) this->resetActors();
         return;
     }
 
@@ -440,8 +483,11 @@ void App::render() {
         this->hud.drawScoreGraph(window, this->scoreXs, this->scoreYs, title,
                                  40.f, H * 0.23f, W - 40.f, H * 0.72f);
     } else {
-        // Framed play area (cart/track) as the main focus.
-        this->hud.drawPlayfield(window);
+        // Framed play area (cart/track) as the main focus. Green frame in the
+        // all-actors view (it shows training), coral otherwise.
+        this->hud.drawPlayfield(window, this->view == kViewActors
+                                            ? sf::Color(120, 200, 150)   // green
+                                            : sf::Color(225, 130, 95));  // coral
 
         // Draw the track to match the physical limits: cart-center range (+-trackLimit
         // meters) scaled to pixels, widened by half a cart so the body fits the rail.
@@ -453,13 +499,15 @@ void App::render() {
         if (this->view == kViewActors) {
             // Overlay every actor's pole on the one track, translucent so the spread of
             // swing-ups reads at once. More actors -> fainter, so it never washes out.
+            // States come from the replayed rollout batch at the current frame.
             const sf::Uint8 alpha = static_cast<sf::Uint8>(
-                std::max(40, 200 / std::max(1, this->agentCount)));
-            for (int i = 0; i < this->agentCount; ++i) {
-                const float sx = layout.center.x + this->actors[i].getX() * kPixelsPerMeter;
+                std::max(40, 200 / std::max(1, this->actorCount)));
+            const int base = this->actorFrame * this->actorCount;
+            for (int i = 0; i < this->actorCount; ++i) {
+                const float sx = layout.center.x + this->actorX[base + i] * kPixelsPerMeter;
                 this->cart.setPosition(sx, layout.center.y);
                 this->pendulum.setPivot(this->cart.getPivot());
-                this->pendulum.setAngle(this->actors[i].getAngle());
+                this->pendulum.setAngle(this->actorTheta[base + i]);
                 this->cart.draw(window, alpha);
                 this->pendulum.draw(window, alpha);
             }
@@ -482,9 +530,9 @@ void App::render() {
 
     // Status panels, top-left. While training, split into two: an orange box for
     // the displayed run and a green box (next to it) for overall training progress.
-    if (this->trainingMode && this->view == kViewTraining) {
-        // Training view shows no single run, so drop the orange box and put the
-        // green training box in its place.
+    if (this->trainingMode && this->view != kViewSingle) {
+        // Only the single-policy view shows a single run, so the actors/training
+        // views drop the orange box and put the green training box in its place.
         this->hud.drawTextBox(window, this->greenText(), 40.f, 22.f,
                               sf::Color(120, 200, 150));                  // green
     } else if (this->trainingMode) {

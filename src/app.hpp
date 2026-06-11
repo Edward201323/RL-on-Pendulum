@@ -39,8 +39,9 @@ private:
     void processEvents();
     void update(float dt);
     void resetEpisode();  // start a fresh swing-up attempt from the bottom
-    void resetActors();   // reseed the all-actors view with fresh random start angles
-    void updateActors(float dt);  // step every actor sim under the current policy
+    void resetActors();        // restart the actor-overlay replay from frame 0
+    void updateActors(float dt);  // advance the actor-overlay replay one frame
+    void maybeReloadActors();  // reload the exported rollout batch when it changes
     void render();
 
     void launchTraining();      // spawn the Python trainer as a child process
@@ -82,7 +83,14 @@ private:
     // Left/Right cycle through these views (looping).
     enum View { kViewSingle = 0, kViewActors, kViewTraining, kViewCount };
     int view;                 // current View
-    std::vector<CartPole> actors;  // local reconstruction of the parallel actors (overlay view)
+    // All-actors overlay: a real rollout batch exported by the trainer, replayed.
+    // x/theta are flat [steps * count], indexed frame*count + actor.
+    std::vector<float> actorX, actorTheta;
+    int actorCount;           // actors in the current rollout file
+    int actorSteps;           // frames per actor (episode length)
+    int actorFrame;           // current replay frame
+    std::filesystem::file_time_type actorsMtime;
+    bool haveActorsMtime;
 
     std::vector<float> scoreXs;  // learning curve: attempts ...
     std::vector<float> scoreYs;  // ... and the matching scores

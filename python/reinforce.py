@@ -28,6 +28,7 @@ import torch.nn as nn
 from pendulum_env import PendulumSwingUpEnv
 
 EXPORT_EVERY = 5    # re-export policy.txt this often (updates) so the app can watch
+ACTORS_EXPORT = 32  # max actor rollouts dumped to actors.txt for the live overlay
 
 GAMMA = 0.99        # discount: how much a future reward counts vs. an immediate one
 LR = 3e-3           # lower than 1e-2 for long-run stability (REINFORCE diverges easily)
@@ -44,8 +45,8 @@ LOG_STD_MAX = 0.5   # (collapse -> stuck deterministic) or explode
 # Balance (time spent upright) is primary; centering (sitting at x=0 *while* upright)
 # is the secondary tie-breaker. Centering is GATED on uprightness -- being centered
 # while the pole hangs earns nothing -- so balancing is always worth more.
-SCORE_W_BALANCE = 0.8   # max points from keeping the pole up
-SCORE_W_CENTER = 0.2    # max extra points from doing it centered at x=0
+SCORE_W_BALANCE = 0.85  # max points from keeping the pole up
+SCORE_W_CENTER = 0.15   # max extra points from doing it centered at x=0
 
 # Observations are SI mixed with sin/cos: x ~ +-1 m, x_dot ~ a few m/s, sin/cos
 # are O(1), theta_dot ~ a few rad/s. Divide by a fixed per-component scale so
@@ -114,6 +115,20 @@ def write_history(points, path="python/train_history.txt"):
     os.replace(tmp, path)  # atomic
 
 
+def write_actors(traj, path="python/actors.txt"):
+    """Atomically dump a rollout batch for the live overlay. `traj` is [T, B, 2]
+    (x, theta) per step per actor; written t-major so the app can replay it frame
+    by frame. Header line is "B T"; then T lines of B "x theta" pairs."""
+    T, B = traj.shape[0], traj.shape[1]
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(f"{B} {T}\n")
+        for t in range(T):
+            f.write(" ".join("%.3f" % v for v in traj[t].reshape(-1)))
+            f.write("\n")
+    os.replace(tmp, path)  # atomic
+
+
 def write_status(attempts, avg_return, done, path="python/train_status.txt"):
     """Progress file the app reads for its on-screen training monitor.
 
@@ -174,8 +189,11 @@ def collect_batch(envs, policy):
     balance = upright_sum / T                                      # 0..1
     centering = centered_sum / np.maximum(upright_sum, 1e-8)       # 0..1, guarded
     episode_scores = 100.0 * balance * (SCORE_W_BALANCE + SCORE_W_CENTER * centering)
+    # Per-actor state trajectory (x, theta) for the live overlay: theta from sin/cos.
+    traj = np.stack([obs_seq[:, :, 0],
+                     np.arctan2(obs_seq[:, :, 2], obs_seq[:, :, 3])], axis=-1)  # [T, B, 2]
     return (obs_seq.reshape(-1, 5), act_seq.reshape(-1),
-            returns.reshape(-1), episode_returns, episode_scores)
+            returns.reshape(-1), episode_returns, episode_scores, traj.astype(np.float32))
 
 
 def read_agent_count(path="python/train_agents.txt", default=BATCH):
@@ -249,6 +267,7 @@ def main():
             ret_flat = np.concatenate([p[2] for p in parts])
             episode_returns = np.concatenate([p[3] for p in parts])
             episode_scores = np.concatenate([p[4] for p in parts])
+            traj_all = np.concatenate([p[5] for p in parts], axis=1)  # [T, total_B, 2]
 
             # One batched forward/backward over every collected step (the speed win).
             obs_t = torch.from_numpy(obs_flat)                  # [N, 5]
@@ -294,6 +313,7 @@ def main():
                 write_status(attempt, score_ema, done=False)  # attempt = cumulative episodes
                 history.append((attempt, score_ema))
                 write_history(history)
+                write_actors(traj_all[:, :ACTORS_EXPORT, :])  # live overlay sample
 
             update += 1
 
