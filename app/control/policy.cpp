@@ -31,7 +31,7 @@ bool Policy::ready() const { return this->loaded; }
 float Policy::act(float x, float velocity, float theta, float angularVelocity) const {
     if (!this->loaded) return 0.f;  // coast
 
-    // Build the observation exactly as python/pendulum_env.py _obs() does:
+    // Build the observation exactly as trainer/pendulum_env.py _obs() does:
     //   [x, x_dot, sin(theta), cos(theta), theta_dot], each divided by obsScale.
     // sin/cos (not raw theta) so the swing-up angle is continuous across +-pi.
     const float input[5] = {

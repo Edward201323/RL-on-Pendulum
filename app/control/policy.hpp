@@ -4,7 +4,7 @@
 #include <vector>
 
 // Tiny feed-forward policy (inputs -> hidden -> outputs) loaded from the text
-// file written by python/export_policy.py. It runs the exact same forward pass
+// file written by trainer/export_policy.py. It runs the exact same forward pass
 // as the trained PyTorch net, so the SFML app can play the RL policy with no
 // Python at runtime. Pure math + file IO; no SFML dependency.
 class Policy {

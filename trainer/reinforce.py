@@ -8,11 +8,11 @@ The idea in one line: run some episodes, then nudge the probability of each
 action up or down in proportion to how good the outcome that followed it was.
 
 Run from the repo root:
-    python3.12 python/reinforce.py            # full run (400 updates)
-    python3.12 python/reinforce.py 60         # shorter run
+    python3.12 trainer/reinforce.py            # full run (400 updates)
+    python3.12 trainer/reinforce.py 60         # shorter run
 
-While training, it re-exports python/policy.txt every few updates (plus a
-python/train_status.txt progress file), so the SFML app can hot-reload and
+While training, it re-exports trainer/policy.txt every few updates (plus a
+trainer/train_status.txt progress file), so the SFML app can hot-reload and
 visualize the policy improving live.
 """
 
@@ -76,7 +76,7 @@ class Policy(nn.Module):
         return self.net(obs / OBS_SCALE)  # the mean action (unbounded; env clips)
 
 
-def write_policy_txt(policy, path="python/policy.txt"):
+def write_policy_txt(policy, path="trainer/policy.txt"):
     """Dump the policy's mean network to the flat text format the C++ app reads.
 
     Writes to a temp file then atomically renames, so a reader (the live demo)
@@ -100,7 +100,7 @@ def write_policy_txt(policy, path="python/policy.txt"):
     os.replace(tmp, path)  # atomic
 
 
-def write_history(points, path="python/train_history.txt"):
+def write_history(points, path="trainer/train_history.txt"):
     """Atomically rewrite the whole (attempts, score) learning curve.
 
     Each `score` is an EMA-smoothed average over all the batch's agents -- a steady
@@ -115,7 +115,7 @@ def write_history(points, path="python/train_history.txt"):
     os.replace(tmp, path)  # atomic
 
 
-def write_actors(traj, path="python/actors.txt"):
+def write_actors(traj, path="trainer/actors.txt"):
     """Atomically dump a rollout batch for the live overlay. `traj` is [T, B, 2]
     (x, theta) per step per actor; written t-major so the app can replay it frame
     by frame. Header line is "B T"; then T lines of B "x theta" pairs."""
@@ -129,7 +129,7 @@ def write_actors(traj, path="python/actors.txt"):
     os.replace(tmp, path)  # atomic
 
 
-def write_status(attempts, avg_return, done, path="python/train_status.txt"):
+def write_status(attempts, avg_return, done, path="trainer/train_status.txt"):
     """Progress file the app reads for its on-screen training monitor.
 
     `attempts` = total practice episodes so far (updates * BATCH) -- a simpler,
@@ -196,7 +196,7 @@ def collect_batch(envs, policy):
             returns.reshape(-1), episode_returns, episode_scores, traj.astype(np.float32))
 
 
-def read_agent_count(path="python/train_agents.txt", default=BATCH):
+def read_agent_count(path="trainer/train_agents.txt", default=BATCH):
     """Parallel-episode count per update; the app sets this live via Up/Down.
     Clamped to [1, MAX_AGENTS]. Falls back to the default if the file is absent."""
     try:
@@ -309,7 +309,7 @@ def main():
             # save never runs, and the trainer is stopped by being killed.
             if (update + 1) % EXPORT_EVERY == 0:
                 write_policy_txt(policy)
-                torch.save(policy.state_dict(), "python/policy.pt")
+                torch.save(policy.state_dict(), "trainer/policy.pt")
                 write_status(attempt, score_ema, done=False)  # attempt = cumulative episodes
                 history.append((attempt, score_ema))
                 write_history(history)
@@ -319,9 +319,9 @@ def main():
 
     # Reached only for a finite CLI cap; the app trains indefinitely.
     write_policy_txt(policy)
-    torch.save(policy.state_dict(), "python/policy.pt")
+    torch.save(policy.state_dict(), "trainer/policy.pt")
     write_status(attempt, score_ema if score_ema is not None else 0.0, done=True)
-    print("saved trained policy -> python/policy.pt")
+    print("saved trained policy -> trainer/policy.pt")
 
 
 if __name__ == "__main__":

@@ -10,23 +10,23 @@ option(BUILD_PYTHON "Build the pybind11 physics module" ON)
 # --- Shared headless physics core (no SFML) -------------------------------
 # Single source of truth for the dynamics: linked into both the SFML app and
 # the Python module so the demo and the trainer run identical physics.
-add_library(cartpole_core STATIC src/physics/cartpole.cpp)
-target_include_directories(cartpole_core PUBLIC src)
+add_library(cartpole_core STATIC app/physics/cartpole.cpp)
+target_include_directories(cartpole_core PUBLIC app)
 set_target_properties(cartpole_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 # --- SFML visualizer ------------------------------------------------------
 if(BUILD_APP)
     find_package(SFML 2 REQUIRED COMPONENTS graphics window system)
     add_executable(PendulumRL
-        src/main.cpp
-        src/app.cpp
-        src/control/policy.cpp
-        src/render/track.cpp
-        src/render/cart.cpp
-        src/render/pendulum.cpp
-        src/render/hud.cpp
+        app/main.cpp
+        app/app.cpp
+        app/control/policy.cpp
+        app/render/track.cpp
+        app/render/cart.cpp
+        app/render/pendulum.cpp
+        app/render/hud.cpp
     )
-    target_include_directories(PendulumRL PRIVATE src)
+    target_include_directories(PendulumRL PRIVATE app)
     target_link_libraries(PendulumRL PRIVATE cartpole_core sfml-graphics sfml-window sfml-system)
 endif()
 
@@ -40,6 +40,6 @@ if(BUILD_PYTHON)
     )
     FetchContent_MakeAvailable(pybind11)
 
-    pybind11_add_module(cartpole_cpp src/python/bindings.cpp)
+    pybind11_add_module(cartpole_cpp app/python/bindings.cpp)
     target_link_libraries(cartpole_cpp PRIVATE cartpole_core)
 endif()

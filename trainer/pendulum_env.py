@@ -7,7 +7,7 @@ contract (observation, reward, termination).
 
 Run the smoke test from the repo root (so the built .so is importable)::
 
-    python3.12 python/pendulum_env.py
+    python3.12 trainer/pendulum_env.py
 """
 
 from __future__ import annotations
@@ -37,6 +37,12 @@ F_MAX = 12.0
 DT = 1.0 / 60.0         # physics step (s), matched to the 60 FPS SFML demo
 SPIN_LIMIT = 12.0       # rad/s; above this, angular velocity is "too high" and punished
                         # (swing-up only needs ~9 rad/s, so this leaves it room)
+
+# Random disturbances: occasional angular "kicks" on the pole (an impulse added to
+# theta_dot) so the policy learns to recover from being shoved -- not just balance a
+# pristine pole. KEEP THESE IN SYNC with kKick* in src/app.cpp (training vs. demo).
+KICK_INTERVAL = 1.5     # average seconds between kicks
+KICK_STRENGTH = 3.0     # max kick magnitude in rad/s (well under SPIN_LIMIT)
 
 # -- reward tuning constants ------------------------------------------------
 # All per-step. The dominant signal is uprightness (cos theta in [-1, 1] plus
@@ -118,6 +124,14 @@ class PendulumSwingUpEnv(gym.Env):
         # clipping here is what actually bounds the applied force.)
         a = float(np.asarray(action).reshape(-1)[0])
         force = max(-1.0, min(1.0, a)) * F_MAX
+
+        # Random disturbance: occasionally shove the pole (add an impulse to its
+        # angular velocity) so the policy must learn to recover, not just hold.
+        if self.np_random.random() < DT / KICK_INTERVAL:
+            kick = float(self.np_random.uniform(-1.0, 1.0)) * KICK_STRENGTH
+            self.sim.set_state(self.sim.x, self.sim.velocity,
+                               self.sim.angle, self.sim.angular_velocity + kick)
+
         self.sim.set_control_force(force)
         self.sim.advance(DT)
         self.steps += 1

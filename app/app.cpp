@@ -25,8 +25,15 @@ namespace {
 constexpr float kPi = 3.14159265358979323846f;
 constexpr float kMaxInputForce = 12.f;     // Newtons; MUST match F_MAX in pendulum_env.py
 constexpr float kUprightCos = 0.95f;       // cos(theta) above this counts as "upright"
-constexpr float kDemoEpisodeSeconds = 10.f;  // auto-restart the demo this often (matches
-                                             // the trainer's 600-step / 10 s episode)
+// Mouse pushes in the demo: hover the cursor over the bob to shove the pole. Each
+// contact fires a single impulse in the contact direction (cursor -> bob center)
+// projected onto the bob's swing, then goes on a short cooldown so holding the
+// cursor on the ball doesn't spam kicks. Up/Down change the strength. (Training
+// applies its own random kicks; see pendulum_env.py.)
+constexpr float kKickStrengthDefault = 3.0f;
+constexpr float kKickStrengthStep = 1.0f;
+constexpr float kKickStrengthMax = 12.0f;
+constexpr float kKickCooldown = 1.0f;  // seconds between mouse-contact kicks
 // Episodes trained in parallel per update: default + max. Max MUST match MAX_AGENTS
 // in reinforce.py. Up/Down change it live; the trainer polls train_agents.txt.
 constexpr int kDefaultAgents = 8;
@@ -55,7 +62,7 @@ static sf::ContextSettings makeContextSettings() {
     return settings;
 }
 
-// Find the repo root (the directory containing python/reinforce.py), whether the
+// Find the repo root (the directory containing trainer/reinforce.py), whether the
 // app is run from the repo root or from elsewhere. Searches the working directory
 // and the executable's directory and its ancestors.
 static std::string findProjectRoot() {
@@ -77,7 +84,7 @@ static std::string findProjectRoot() {
 #endif
 
     for (const fs::path& root : roots) {
-        if (fs::exists(root / "python" / "reinforce.py", ec)) return root.string();
+        if (fs::exists(root / "trainer" / "reinforce.py", ec)) return root.string();
     }
     return ".";  // fall back to the current directory
 }
@@ -102,6 +109,8 @@ App::App(int argc, char** argv)
       trainingPid(0),
       trainingPaused(false),
       agentCount(kDefaultAgents),
+      kickStrength(kKickStrengthDefault),
+      kickCooldown(0.f),
       view(kViewSingle),
       actorCount(0),
       actorSteps(0),
@@ -116,7 +125,7 @@ App::App(int argc, char** argv)
     }
 
     this->projectRoot = findProjectRoot();
-    this->policyPath = this->projectRoot + "/python/policy.txt";
+    this->policyPath = this->projectRoot + "/trainer/policy.txt";
 
     this->resetEpisode();  // pole at the bottom
     if (this->trainingMode) {
@@ -138,15 +147,15 @@ App::~App() {
     }
 }
 
-// Launch `python3.12 python/reinforce.py <updates>` from the repo root as a child
+// Launch `python3.12 trainer/reinforce.py <updates>` from the repo root as a child
 // process. It re-exports policy.txt periodically, which this app hot-reloads.
 void App::launchTraining() {
     // Clear any stale status from a previous run so the box doesn't briefly show
     // an old "Training done" before the new run writes its first update.
     std::error_code ec;
-    std::filesystem::remove(this->projectRoot + "/python/train_status.txt", ec);
-    std::filesystem::remove(this->projectRoot + "/python/train_history.txt", ec);
-    std::filesystem::remove(this->projectRoot + "/python/actors.txt", ec);
+    std::filesystem::remove(this->projectRoot + "/trainer/train_status.txt", ec);
+    std::filesystem::remove(this->projectRoot + "/trainer/train_history.txt", ec);
+    std::filesystem::remove(this->projectRoot + "/trainer/actors.txt", ec);
     this->scoreXs.clear();
     this->scoreYs.clear();
     this->haveScoresMtime = false;
@@ -157,7 +166,7 @@ void App::launchTraining() {
 
     // No update count -> reinforce.py trains indefinitely until we kill it (S key).
     const std::string cmd = "cd '" + this->projectRoot +
-                            "' && exec python3.12 python/reinforce.py";
+                            "' && exec python3.12 trainer/reinforce.py";
     const char* argv[] = {"/bin/sh", "-c", cmd.c_str(), nullptr};
     pid_t pid = 0;
     if (posix_spawn(&pid, "/bin/sh", nullptr, nullptr,
@@ -177,7 +186,7 @@ void App::snapshotPolicy() {
     if (fresh.load(this->policyPath)) {
         this->policy = fresh;
     }
-    std::ifstream in(this->projectRoot + "/python/train_status.txt");
+    std::ifstream in(this->projectRoot + "/trainer/train_status.txt");
     int a = 0, done = 0;
     float r = 0.f;
     this->shownAttempts = (in >> a >> r >> done) ? a : 0;
@@ -212,9 +221,12 @@ float App::maxScore() const {
 
 // Top-right corner key hints (Up/Down only listed on the training slide).
 std::string App::controlsText() const {
-    std::string s = "Space: Pause\nLeft/Right: Switch view";
-    if (this->view == kViewActors) s += "\nUp/Down: Increase/Decrease actors";
-    return s;
+    if (this->view == kViewActors) {
+        return "Left/Right: Switch view\nSpace: Pause Training"
+               "\nUp/Down: Increase/Decrease actors";
+    }
+    return "Left/Right: Switch view\nSpace: Reset"
+           "\nHover ball: Push pole\nUp/Down: Push strength";
 }
 
 // --watch single box (no trainer running): which policy is shown and its run time.
@@ -225,13 +237,13 @@ std::string App::displayText() const {
     return std::string(buf);
 }
 
-// Orange box: everything about the run currently on screen. Elapsed is shown out
-// of the 10 s auto-cycle window.
+// Orange box: everything about the run currently on screen.
 std::string App::orangeText() const {
-    char buf[128];
-    std::snprintf(buf, sizeof(buf), "Policy: #%d\nElapsed: %4.2f / %.0fs\nScore: %5.1f",
-                  this->shownAttempts, this->episodeTime, kDemoEpisodeSeconds,
-                  this->displayedScore());
+    char buf[160];
+    std::snprintf(buf, sizeof(buf),
+                  "Policy: #%d\nElapsed: %5.2fs\nScore: %5.1f\nKick: %4.1f",
+                  this->shownAttempts, this->episodeTime, this->displayedScore(),
+                  this->kickStrength);
     return std::string(buf);
 }
 
@@ -239,7 +251,7 @@ std::string App::orangeText() const {
 std::string App::greenText() const {
     int trained = 0, done = 0;
     float ret = 0.f;
-    { std::ifstream in(this->projectRoot + "/python/train_status.txt");
+    { std::ifstream in(this->projectRoot + "/trainer/train_status.txt");
       in >> trained >> ret >> done; }
 
     // While paused, drop the actor count (it isn't training); while training, show it.
@@ -281,10 +293,13 @@ void App::processEvents() {
 
         if (event.type != sf::Event::KeyPressed) continue;
 
-        // Space pauses / resumes training (freeze the child process; the window
-        // keeps running so the current policy stays on screen past its window).
+        // Space is context-sensitive: on the single-run view it restarts the run
+        // with the latest policy; on the training view it pauses/resumes the trainer.
         if (event.key.code == sf::Keyboard::Space) {
-            if (this->trainingPid > 0) {
+            if (this->view == kViewSingle) {
+                this->snapshotPolicy();   // fresh swing-up with the newest policy
+                this->resetEpisode();
+            } else if (this->trainingPid > 0) {
                 this->trainingPaused = !this->trainingPaused;
                 kill(this->trainingPid, this->trainingPaused ? SIGSTOP : SIGCONT);
                 std::printf(this->trainingPaused ? "Training paused.\n"
@@ -298,6 +313,11 @@ void App::processEvents() {
                    event.key.code == sf::Keyboard::Down) {
             if (this->agentCount > 1) --this->agentCount;           // fewer parallel episodes
             this->writeAgentCount();
+        } else if (this->view == kViewSingle && event.key.code == sf::Keyboard::Up) {
+            this->kickStrength = std::min(kKickStrengthMax,
+                                          this->kickStrength + kKickStrengthStep);
+        } else if (this->view == kViewSingle && event.key.code == sf::Keyboard::Down) {
+            this->kickStrength = std::max(0.f, this->kickStrength - kKickStrengthStep);
         } else if (this->trainingMode && (event.key.code == sf::Keyboard::Left ||
                                           event.key.code == sf::Keyboard::Right)) {
             // Left/Right cycle through the views, wrapping (Right forward, Left back).
@@ -316,7 +336,7 @@ void App::processEvents() {
 // Write the desired parallel-episode count to a file the trainer polls each
 // update (Up/Down change it live).
 void App::writeAgentCount() const {
-    const std::string path = this->projectRoot + "/python/train_agents.txt";
+    const std::string path = this->projectRoot + "/trainer/train_agents.txt";
     const std::string tmp = path + ".tmp";
     std::ofstream out(tmp);
     if (!out) return;
@@ -330,7 +350,7 @@ void App::writeAgentCount() const {
 // when it changes on disk (appended every few updates).
 void App::maybeReloadScores() {
     namespace fs = std::filesystem;
-    const std::string path = this->projectRoot + "/python/train_history.txt";
+    const std::string path = this->projectRoot + "/trainer/train_history.txt";
     std::error_code ec;
     const fs::file_time_type t = fs::last_write_time(path, ec);
     if (ec) return;  // no history yet
@@ -386,7 +406,7 @@ void App::updateActors(float /*dt*/) {
 // File format: "B T" header, then T lines of B "x theta" pairs (t-major).
 void App::maybeReloadActors() {
     namespace fs = std::filesystem;
-    const std::string path = this->projectRoot + "/python/actors.txt";
+    const std::string path = this->projectRoot + "/trainer/actors.txt";
     std::error_code ec;
     const fs::file_time_type t = fs::last_write_time(path, ec);
     if (ec) return;  // no rollout exported yet
@@ -460,20 +480,53 @@ void App::update(float dt) {
     this->liveCenteredSum += up * centerQ;
     this->liveScoreFrames += 1;
 
-    this->episodeTime += dt;
-    // Auto-cycle: every episode length, grab the newest policy and restart from the
-    // bottom -- no key press needed. While training is paused, keep showing the
-    // current policy and let it run past the window (no reset).
-    if (!this->trainingPaused && this->episodeTime >= kDemoEpisodeSeconds) {
-        this->snapshotPolicy();
-        this->resetEpisode();
-    }
+    this->episodeTime += dt;  // shown as "Elapsed"; the run continues until the user
+                              // presses Space to restart it with the latest policy.
 
     // Map the centered physics x (meters) onto the screen and position renderers.
     const float screenX = layout.center.x + this->sim.getX() * kPixelsPerMeter;
     this->cart.setPosition(screenX, layout.center.y);
     this->pendulum.setPivot(this->cart.getPivot());
     this->pendulum.setAngle(this->sim.getAngle());
+
+    // Let the cursor shove the pole when it's resting on the ball (uses the just-
+    // positioned bob, so the hit test matches what's drawn this frame).
+    this->nudgeFromMouse(dt);
+}
+
+// Mouse "contact" push: when the cursor touches the bob, fire one impulse. The push
+// points from the cursor into the bob center (where it made contact); only the part
+// of that along the bob's swing arc can move it, so we project onto the tangent. A
+// cooldown gates repeats so resting the cursor on the ball gives one kick per second,
+// not a per-frame torrent.
+void App::nudgeFromMouse(float dt) {
+    if (this->kickCooldown > 0.f) this->kickCooldown -= dt;  // tick toward ready
+
+    const sf::Vector2i mp = sf::Mouse::getPosition(this->window);
+    const float mx = static_cast<float>(mp.x);
+    const float my = static_cast<float>(mp.y);
+
+    const float theta = this->sim.getAngle();
+    const float lengthPx = this->sim.config().length * kPixelsPerMeter;
+    const sf::Vector2f pivot = this->cart.getPivot();
+    const float bobX = pivot.x + lengthPx * std::sin(theta);
+    const float bobY = pivot.y - lengthPx * std::cos(theta);
+
+    // Only when the cursor is actually touching the ball (small grab margin so the
+    // 15 px bob is reachable) and the cooldown has elapsed.
+    const float grabR = kBobRadiusMeters * kPixelsPerMeter + 4.f;
+    const float dx = bobX - mx, dy = bobY - my;
+    const float dist = std::sqrt(dx * dx + dy * dy);
+    if (this->kickCooldown > 0.f || dist > grabR || dist < 1e-3f) return;
+
+    // Push direction = cursor -> bob center; tangent of the swing arc = (cos, sin).
+    // The tangential component is the only part that changes the angle.
+    const float pushX = dx / dist, pushY = dy / dist;
+    const float tangential = pushX * std::cos(theta) + pushY * std::sin(theta);
+    const float dOmega = tangential * this->kickStrength;
+    this->sim.setState(this->sim.getX(), this->sim.getVelocity(), theta,
+                       this->sim.getAngularVelocity() + dOmega);
+    this->kickCooldown = kKickCooldown;  // start the cooldown after a kick lands
 }
 
 // Draw the current frame: background, track + position axis, cart, pendulum,

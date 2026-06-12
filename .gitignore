@@ -9,7 +9,7 @@ __pycache__/
 *.pyc
 
 # Trained model checkpoint (regenerate: reinforce.py -> export_policy.py)
-python/policy.pt
+trainer/policy.pt
 
 # macOS
 .DS_Store

@@ -38,6 +38,7 @@ public:
 private:
     void processEvents();
     void update(float dt);
+    void nudgeFromMouse(float dt);  // hover the bob to push the pole (single-run view)
     void resetEpisode();  // start a fresh swing-up attempt from the bottom
     void resetActors();        // restart the actor-overlay replay from frame 0
     void updateActors(float dt);  // advance the actor-overlay replay one frame
@@ -75,12 +76,14 @@ private:
     int shownAttempts;        // training-attempt count behind the on-screen policy
     std::deque<float> forceHistory;  // recent control forces for the time graph
 
-    std::string projectRoot;  // repo root (holds python/), found at startup
-    std::string policyPath;   // projectRoot + "/python/policy.txt"
+    std::string projectRoot;  // repo root (holds trainer/), found at startup
+    std::string policyPath;   // projectRoot + "/trainer/policy.txt"
     bool trainingMode;        // true = launch training and show its progress
     pid_t trainingPid;        // child trainer pid (0 = none), killed on exit
     bool trainingPaused;      // true while training is paused (SIGSTOP) via Space
     int agentCount;           // episodes trained in parallel per update (Up/Down)
+    float kickStrength;       // mouse-kick impulse (rad/s) in the single-run view
+    float kickCooldown;       // seconds left before the next mouse-contact kick
     // Left/Right toggle between these views.
     enum View { kViewSingle = 0, kViewActors, kViewCount };
     int view;                 // current View
