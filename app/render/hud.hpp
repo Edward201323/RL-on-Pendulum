@@ -51,7 +51,21 @@ public:
                         const std::vector<float>& ys, const char* label,
                         float x0, float y0, float x1, float y1) const;
 
+    // Device-pixels-per-point of the render target (2 on a Retina display, 1
+    // otherwise). Glyphs are rasterized at this multiple of their point size so
+    // text stays sharp when the view is scaled up to native resolution.
+    void setRenderScale(float scale);
+
 private:
+    // Build a text whose glyphs are rasterized at native pixel density: the font
+    // size is multiplied by renderScale and the text counter-scaled by 1/renderScale,
+    // so it draws at its requested point size but with a high-resolution glyph atlas.
+    // getLocalBounds() then reports bounds in the (scaled-up) glyph space, which is
+    // exactly what setOrigin expects; callers needing point-space dimensions divide
+    // the bounds by renderScale.
+    sf::Text makeText(const std::string& str, unsigned pointSize) const;
+
     sf::Font font;
     bool hasFont;
+    float renderScale = 1.f;
 };

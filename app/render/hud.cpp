@@ -43,13 +43,25 @@ Hud::Hud() : hasFont(false) {
     for (const char* path : kFontPaths) {
         if (this->font.loadFromFile(path)) {
             this->hasFont = true;
-            // Nearest-neighbour glyph sampling keeps text edges crisp (SFML's
-            // default linear smoothing softens them, which is worse once macOS
-            // upscales the whole window on a Retina display).
-            this->font.setSmooth(false);
             break;
         }
     }
+}
+
+// Device-pixel density of the render target (see header). Glyphs are rasterized at
+// this multiple of their point size so text stays sharp at native resolution.
+void Hud::setRenderScale(float scale) {
+    this->renderScale = scale > 0.f ? scale : 1.f;
+}
+
+// A text drawn at its point size but with a glyph atlas rasterized at native pixel
+// density: oversize the font, then counter-scale so the on-screen size is unchanged.
+sf::Text Hud::makeText(const std::string& str, unsigned pointSize) const {
+    sf::Text t(str, this->font,
+               static_cast<unsigned>(std::round(pointSize * this->renderScale)));
+    const float inv = 1.f / this->renderScale;
+    t.setScale(inv, inv);
+    return t;
 }
 
 void Hud::drawPlayfield(sf::RenderWindow& window, sf::Color outline) const {
@@ -96,7 +108,7 @@ void Hud::drawAxis(sf::RenderWindow& window, const TrackLayout& layout,
         if (major && this->hasFont) {
             char buf[16];
             std::snprintf(buf, sizeof(buf), "%.2f", meters);
-            sf::Text label(buf, this->font, 16);
+            sf::Text label = makeText(buf, 16);
             label.setFillColor(axisColor);
             const sf::FloatRect b = label.getLocalBounds();
             // Snap origin and position to whole pixels so glyphs stay crisp.
@@ -111,11 +123,14 @@ float Hud::drawTextBox(sf::RenderWindow& window, const std::string& str,
                        float x, float y, sf::Color outline) const {
     if (!this->hasFont) return 0.f;
 
-    sf::Text text(str, this->font, 20);
+    sf::Text text = makeText(str, 20);
     text.setFillColor(sf::Color::White);
 
+    // getLocalBounds is in the oversized glyph space; scale back to points to size
+    // the panel (the text itself is counter-scaled, so it draws at its point size).
     const sf::FloatRect b = text.getLocalBounds();
-    const float boxW = b.width + 30.f, boxH = b.height + 30.f;
+    const float boxW = b.width / this->renderScale + 30.f,
+                boxH = b.height / this->renderScale + 30.f;
 
     sf::ConvexShape box = roundedRect(boxW, boxH, 10.f);
     box.setPosition(x, y);
@@ -131,7 +146,7 @@ float Hud::drawTextBox(sf::RenderWindow& window, const std::string& str,
 
 void Hud::drawCornerHint(sf::RenderWindow& window, const std::string& str) const {
     if (!this->hasFont) return;
-    sf::Text t(str, this->font, 14);
+    sf::Text t = makeText(str, 14);
     t.setFillColor(sf::Color(165, 165, 165));
     const sf::FloatRect b = t.getLocalBounds();
     t.setOrigin(std::round(b.left + b.width), 0.f);  // anchor the right edge
@@ -154,7 +169,7 @@ void Hud::drawScoreGraph(sf::RenderWindow& window, const std::vector<float>& xs,
     auto drawLabel = [&](const char* s, unsigned size, sf::Color c, float ax, float ay,
                          int align) {  // align: 0 left, 1 right
         if (!this->hasFont) return;
-        sf::Text t(s, this->font, size);
+        sf::Text t = makeText(s, size);
         t.setFillColor(c);
         const sf::FloatRect b = t.getLocalBounds();
         const float ox = (align == 1) ? (b.left + b.width) : 0.f;
@@ -284,7 +299,7 @@ void Hud::drawGraph(sf::RenderWindow& window, const std::deque<float>& samples,
         // Title + live value, top-left inside the panel.
         char head[64];
         std::snprintf(head, sizeof(head), "%s   %+6.2f", label, n ? samples.back() : 0.f);
-        sf::Text title(head, this->font, 16);
+        sf::Text title = makeText(head, 16);
         title.setFillColor(sf::Color(220, 220, 220));
         title.setPosition(std::round(x0 + 10.f), std::round(y0 + 6.f));
         window.draw(title);
@@ -295,7 +310,7 @@ void Hud::drawGraph(sf::RenderWindow& window, const std::deque<float>& samples,
         for (int i = 0; i < 3; ++i) {
             char vb[16];
             std::snprintf(vb, sizeof(vb), "%+.0f", vals[i]);
-            sf::Text t(vb, this->font, 14);
+            sf::Text t = makeText(vb, 14);
             t.setFillColor(grid);
             const sf::FloatRect b = t.getLocalBounds();
             // Snap to whole pixels for crisp glyphs.

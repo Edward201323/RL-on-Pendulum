@@ -25,9 +25,15 @@ if(BUILD_APP)
         app/render/cart.cpp
         app/render/pendulum.cpp
         app/render/hud.cpp
+        app/render/retina.mm
     )
     target_include_directories(PendulumRL PRIVATE app)
     target_link_libraries(PendulumRL PRIVATE cartpole_core sfml-graphics sfml-window sfml-system)
+    if(APPLE)
+        # Native-resolution (Retina) rendering shim is Objective-C++ and uses Cocoa.
+        find_library(COCOA_LIBRARY Cocoa)
+        target_link_libraries(PendulumRL PRIVATE ${COCOA_LIBRARY})
+    endif()
 endif()
 
 # --- Python module (cartpole_cpp) -----------------------------------------

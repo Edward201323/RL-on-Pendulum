@@ -18,6 +18,7 @@
 #include <mach-o/dyld.h>
 #endif
 
+#include "render/retina.hpp"
 #include "render/track.hpp"
 
 extern char** environ;  // for posix_spawn (launching the Python trainer)
@@ -119,6 +120,19 @@ App::App(int argc, char** argv)
       haveActorsMtime(false),
       haveScoresMtime(false) {
     window.setFramerateLimit(60);
+
+    // Render at the display's native pixel resolution instead of letting macOS
+    // upscale a point-resolution framebuffer (the cause of the fuzzy graphics).
+    // enableRetinaBacking switches on the high-resolution surface and reports the
+    // backing scale; we then stretch the view's viewport to fill the larger buffer
+    // so all the existing point-sized drawing maps onto the extra pixels crisply.
+    const float renderScale = enableRetinaBacking(window);
+    if (renderScale > 1.f) {
+        sf::View v = window.getView();
+        v.setViewport(sf::FloatRect(0.f, 1.f - renderScale, renderScale, renderScale));
+        window.setView(v);
+    }
+    this->hud.setRenderScale(renderScale);  // rasterize glyphs at native pixels too
 
     // "--watch" skips training and just plays whatever policy.txt already exists.
     for (int i = 1; i < argc; ++i) {
