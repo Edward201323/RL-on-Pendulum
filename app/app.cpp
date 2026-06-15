@@ -10,6 +10,7 @@
 #include <fstream>
 #include <spawn.h>
 #include <string>
+#include <sys/wait.h>  // waitpid (reap the trainer before wiping its data)
 #include <system_error>
 #include <vector>
 
@@ -150,12 +151,10 @@ App::~App() {
 // Launch `python3.12 trainer/reinforce.py <updates>` from the repo root as a child
 // process. It re-exports policy.txt periodically, which this app hot-reloads.
 void App::launchTraining() {
-    // Clear any stale status from a previous run so the box doesn't briefly show
-    // an old "Training done" before the new run writes its first update.
-    std::error_code ec;
-    std::filesystem::remove(this->projectRoot + "/trainer/train_status.txt", ec);
-    std::filesystem::remove(this->projectRoot + "/trainer/train_history.txt", ec);
-    std::filesystem::remove(this->projectRoot + "/trainer/actors.txt", ec);
+    // NOTE: we deliberately DON'T delete the trainer's data files here -- a normal
+    // quit leaves them in place and the trainer resumes from policy.pt + the history
+    // on the next launch. Only Command+Shift+R (wipeTrainingData) discards them.
+    // Drop our in-memory copies so the curve/overlay reload cleanly from disk.
     this->scoreXs.clear();
     this->scoreYs.clear();
     this->haveScoresMtime = false;
@@ -176,6 +175,38 @@ void App::launchTraining() {
     } else {
         std::printf("Could not start the training process.\n");
     }
+}
+
+// Delete every file the trainer persists -- the saved checkpoint, the exported
+// policy, the learning curve, the status, and the overlay rollout. After this the
+// trainer has nothing to resume from, so it starts fresh. Only Command+Shift+R
+// reaches here; a normal quit keeps all of it.
+void App::wipeTrainingData() {
+    std::error_code ec;
+    const std::string dir = this->projectRoot + "/trainer/";
+    for (const char* name : {"policy.pt", "policy.txt", "train_history.txt",
+                             "train_status.txt", "actors.txt"}) {
+        std::filesystem::remove(dir + name, ec);
+    }
+}
+
+// Command+Shift+R: throw away the saved training and start over. Hard-kill the
+// running trainer first (SIGKILL, not SIGTERM, so its save-on-exit can't recreate
+// the files we're about to delete) and reap it before wiping.
+void App::restartTrainingFresh() {
+    if (this->trainingPid > 0) {
+        if (this->trainingPaused) kill(this->trainingPid, SIGCONT);
+        kill(this->trainingPid, SIGKILL);
+        waitpid(this->trainingPid, nullptr, 0);  // ensure it's gone before wiping
+        this->trainingPid = 0;
+        this->trainingPaused = false;
+    }
+    this->wipeTrainingData();
+    this->shownAttempts = 0;
+    this->policy = Policy();      // drop the trained policy from the on-screen run
+    this->resetEpisode();
+    this->launchTraining();       // fresh run: no checkpoint left to resume from
+    std::printf("Training data wiped -- starting over from scratch.\n");
 }
 
 // Grab the latest exported policy and remember how many training attempts it
@@ -223,10 +254,12 @@ float App::maxScore() const {
 std::string App::controlsText() const {
     if (this->view == kViewActors) {
         return "Left/Right: Switch view\nSpace: Pause Training"
-               "\nUp/Down: Increase/Decrease actors";
+               "\nUp/Down: Increase/Decrease actors"
+               "\nCmd+Shift+R: Wipe & restart training";
     }
     return "Left/Right: Switch view\nSpace: Reset"
-           "\nHover ball: Push pole\nUp/Down: Push strength";
+           "\nHover ball: Push pole\nUp/Down: Push strength"
+           "\nCmd+Shift+R: Wipe & restart training";
 }
 
 // --watch single box (no trainer running): which policy is shown and its run time.
@@ -292,6 +325,15 @@ void App::processEvents() {
             window.close();
 
         if (event.type != sf::Event::KeyPressed) continue;
+
+        // Command+Shift+R (system = Cmd on macOS): the ONLY way to discard saved
+        // training. Wipes the trainer's files and restarts from scratch. A normal
+        // quit keeps everything and the next launch resumes it.
+        if (this->trainingMode && event.key.code == sf::Keyboard::R &&
+            event.key.shift && event.key.system) {
+            this->restartTrainingFresh();
+            continue;
+        }
 
         // Space is context-sensitive: on the single-run view it restarts the run
         // with the latest policy; on the training view it pauses/resumes the trainer.

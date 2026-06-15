@@ -18,6 +18,7 @@ visualize the policy improving live.
 
 import math
 import os
+import signal
 import sys
 from concurrent.futures import ProcessPoolExecutor
 
@@ -113,6 +114,24 @@ def write_history(points, path="trainer/train_history.txt"):
         for a, s in points:
             f.write(f"{a} {s:.2f}\n")
     os.replace(tmp, path)  # atomic
+
+
+def read_history(path="trainer/train_history.txt"):
+    """Load a previously written (attempts, score) learning curve, if any.
+
+    Used to resume across runs: a normal quit leaves this file in place, so the
+    next launch picks the curve (and the cumulative attempt count) back up where
+    it left off. Returns [] when the file is absent (a fresh start / a wipe)."""
+    points = []
+    try:
+        with open(path) as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 2:
+                    points.append((int(float(parts[0])), float(parts[1])))
+    except FileNotFoundError:
+        pass
+    return points
 
 
 def write_actors(traj, path="trainer/actors.txt"):
@@ -244,19 +263,42 @@ def main():
     # saturates the output into the +-max-force bang-bang chatter).
     optimizer = torch.optim.Adam(policy.parameters(), lr=LR, weight_decay=1e-4)
 
-    # Export the starting (random) policy so a live viewer shows the "before".
-    write_policy_txt(policy)
-    write_status(0, 0.0, done=False)
-    history = []  # (attempts, score) learning curve; rewritten atomically each export
-    write_history(history)  # fresh, empty curve
+    # Resume from the last run unless it was wiped. A normal quit leaves
+    # trainer/policy.pt + the history files in place, so we reload the weights and
+    # the learning curve and keep training where we stopped. Command+Shift+R in the
+    # app deletes those files, which makes this an honest fresh start instead.
+    ckpt_path = "trainer/policy.pt"
+    history = read_history()  # (attempts, score) learning curve
+    attempt = 0               # cumulative practice episodes so far
+    score_ema = None          # EMA-smoothed 0..100 "% upright" score = the plotted "score"
+    if os.path.exists(ckpt_path):
+        try:
+            policy.load_state_dict(torch.load(ckpt_path))
+            if history:
+                attempt = int(history[-1][0])
+                score_ema = history[-1][1]
+            print(f"resumed from checkpoint at attempt {attempt}")
+        except Exception as e:  # corrupt/incompatible checkpoint -> start clean
+            print(f"could not load {ckpt_path} ({e}); starting fresh")
+            history = []
+    else:
+        history = []  # no checkpoint -> ignore any orphan history file
 
-    score_ema = None  # EMA-smoothed 0..100 "% upright" score = the plotted "score"
+    # Export the current (resumed or fresh-random) policy so a live viewer shows it.
+    write_policy_txt(policy)
+    write_status(attempt, score_ema if score_ema is not None else 0.0, done=False)
+    write_history(history)
+
+    # On SIGTERM (the app closing, or relaunching us) finish the current update and
+    # save, so "every quit keeps the training" holds even mid-run.
+    stop_requested = [False]
+    signal.signal(signal.SIGTERM, lambda *_: stop_requested.__setitem__(0, True))
+
     update = 0
-    attempt = 0
     # Persistent pool: WORKERS processes, each holding its own envs + policy copy, so
     # the per-update rollouts run in true parallel (no GIL, no per-update env rebuild).
     with ProcessPoolExecutor(max_workers=WORKERS, initializer=_init_worker) as pool:
-        while updates is None or update < updates:
+        while (updates is None or update < updates) and not stop_requested[0]:
             n_total = read_agent_count()  # live parallel-episode count (Up/Down)
             # Fan the episodes out across workers, gather, and concatenate the results.
             sd = {k: v.cpu() for k, v in policy.state_dict().items()}
@@ -317,9 +359,11 @@ def main():
 
             update += 1
 
-    # Reached only for a finite CLI cap; the app trains indefinitely.
+    # Reached on a finite CLI cap or a SIGTERM (the app quitting): checkpoint the
+    # weights AND the learning curve so the next launch can resume them.
     write_policy_txt(policy)
     torch.save(policy.state_dict(), "trainer/policy.pt")
+    write_history(history)
     write_status(attempt, score_ema if score_ema is not None else 0.0, done=True)
     print("saved trained policy -> trainer/policy.pt")
 

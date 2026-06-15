@@ -46,6 +46,8 @@ private:
     void render();
 
     void launchTraining();      // spawn the Python trainer as a child process
+    void wipeTrainingData();    // delete every persisted trainer file (Command+Shift+R)
+    void restartTrainingFresh();  // wipe the saved training and start a fresh run
     void snapshotPolicy();      // load the latest policy + capture its attempt count
     void writeAgentCount() const;      // tell the trainer how many episodes to run in parallel
     void maybeReloadScores();   // reload the score-vs-attempts history when it changes
